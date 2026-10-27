@@ -1,0 +1,1032 @@
+---
+title: "Figure 1 - Definition of the RIG-I-only and STAT-only signatures"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This markdown reproduces the panels of **Figure 1**. We define two
+gene signatures that decouple the RIG-I and the IFNR (JAK/STAT) downstream
+programs using bulk RNA-Seq time courses of A549 cells:
+
+* **IFN time course**: A549 WT cells treated with IFN-β (or control) at
+  several time points.
+* **dsRNA time course**: A549 WT and RIG-I KO cells electroporated with
+  dsRNA (or polyC / mock control) at several time points.
+
+Dynamically regulated genes were inferred with a splines approach in each
+time course (Aleksandr Refeld pipeline). Genes that are dynamic in the RIG-I
+KO (i.e. IFN-driven secondary response) or after IFN treatment are
+compared, the shared genes are removed and the remaining genes are used for
+a concatenated PCA of the IFN and RIG-I KO samples. PC1 separates the
+RIG-I-driven samples and PC2 the IFN-driven samples; the top-100 genes of
+the PC1 loadings define the **RIG-I-only** signature and the bottom-100 of
+the PC2 loadings the **STAT-only** (IFN-only) signature. The signatures are
+validated by scoring single A549 cells treated with dsRNA/IFN and A549 cells
+infected with influenza A virus (Sun et al. 2020).
+
+Panels:
+
+| Panel | File (`figures/figure_01/`) |
+|---|---|
+| Venn diagram IFN vs RIG-I KO dynamic genes | `venn_diagram_ko_ifn_aleksandr_genes.pdf` |
+| Heatmap of the dynamic genes (IFN + RIG-I KO samples) | `heatmap_concatenated_subset_mtx.pdf` |
+| Concatenated PCA (IFN + RIG-I KO samples) | `pca_concatenated_aleksandr_ko_ifn_genes_noWT.pdf` |
+| Scoring of the A549 scRNA-Seq data | `scoring_ifn_rig_ionly_signatures.pdf` |
+| RIG-I-only vs STAT-only scores in IAV infected A549 (Sun et al.) | `scatterplot_scores_rigi_stat_viralgo.pdf` |
+
+Outputs written to `analysis/figure_01/` are re-used by other sections:
+
+* `rigi_vs_stat_only_signatures.rds` / `.xlsx`: final signatures (used by
+  every other figure through `path2signs` in `settings.R`).
+* `pca_concatenated.rds`: concatenated PCA (used by Supplementary Figure 1
+  to project the WT samples).
+
+
+# Input data
+
+| Input | Path | Description |
+|---|---|---|
+| IFN time course, raw counts | `/media/ag-cherrmann/projects/08_BinderISG/data_rna_timecourse/` (folders `A549`, `A549-WT`; `*_featureCounts.tsv`) | STAR + featureCounts output |
+| IFN time course, counts matrix | `/media/ag-cherrmann/cramirez/interferon_model/analysis/01_QC_visualization/counts_interferon_RNASeq.tsv.gz` | genes x samples (Ensembl IDs) |
+| IFN time course, VST matrix | `/media/ag-cherrmann/cramirez/interferon_model/analysis/01_QC_visualization/vst_interferon_RNASeq.tsv.gz` | DESeq2 VST; generated in `interferon_model/scripts/R/01_QC_visualization_samples.Rmd` |
+| dsRNA time course, raw counts | `/media/bq-storage/ag-cherrmann/projects/08_BinderISG/rnaseq/data_Sept2025_dsRNA_polyC/processed_data/` (`*featureCounts.tsv`) | STAR + featureCounts output, WT and RIG-I KO |
+| dsRNA time course, counts + sample annotations | `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/counts_matrix_renamed.rds`, `samples_metadata.rds` | input of the splines pipeline |
+| dsRNA time course, VST matrix + gene annotation | `/media/ag-cherrmann/cramirez/rnaSeq_dsRNA/analysis/sept_2025/01_exploratory_data_analysis/vst_dsRNA_sept2025.tsv.gz` | DESeq2 VST; columns `gene_name` / `ensembl_id` are the gene annotation (Ensembl ID → symbol). Generated in `rnaSeq_dsRNA/scripts/R/sept_2025/01_exploratory_data_analysis.Rmd` |
+| IFN dynamic genes (196) | `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/IFNb_Response_Omnibus_Strict_FCcorresp.rds` | splines, `interferon_model/scripts/R/may_2026/00_ifn_dynamical_genes.R` |
+| dsRNA dynamic genes (WT / KO) | `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/wt_ko_splines_gene_sets.rds` | splines, `interferon_model/scripts/R/may_2026/00_EPO_dynamical_genes.R` |
+| Same gene sets, used for the heatmap | `/media/ag-cherrmann/cramirez/interferon_model/data/aleksandr_genes/wt_ko_splines_gene_sets.rds`, `/media/ag-cherrmann/cramirez/interferon_model/analysis/figure_00_genes_clusters_inference_IFN_aleksandr/mfuzz_results_interferon_rf_splines_aleksandr.xlsx` | identical gene content to the two files above (checked below) |
+| A549 scRNA-Seq (dsRNA / IFN treated), processed Seurat object | `/media/ag-cherrmann/cramirez/multiome_ifn_project/data/seurat/ifn_treated_cells_rnaseq_processed_seurat.rds` | in-house; sample annotation in `orig.ident` |
+| Sun et al. 2020 (GSE143167, A549 infected with IAV Perth09), raw 10x | `/media/bq-storage/ag-cherrmann/cramirez/data/GSE143167_cellranger_hg38_perth09/` | cellranger output (`barcodes`, `features`, `matrix`) incl. viral genes |
+| Sun et al. 2020, processed Seurat object | `/media/bq-storage/ag-cherrmann/cramirez/data/GSE143167_cellranger_hg38_perth09/sun_2020_processed_seurat.rds` | library annotation (`Mock` / `Bystander` / `Infected`) in `library`; viral NA segment as gene `NA` |
+| MSigDB GOBP_RESPONSE_TO_VIRUS | <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=GOBP_RESPONSE_TO_VIRUS&fileType=grp> | |
+| MSigDB HALLMARK_INTERFERON_GAMMA_RESPONSE | <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_INTERFERON_GAMMA_RESPONSE&fileType=grp> | |
+| MSigDB GOBP_RESPONSE_TO_INTERFERON_BETA | <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=GOBP_RESPONSE_TO_INTERFERON_BETA&fileType=grp> | |
+
+Original scripts: `interferon_model/scripts/R/july_2026/01_rigi_stat_only_signatures_definition.Rmd`,
+`interferon_model/scripts/R/april_2026/figure_01_dsRNA_epo_description_noWT.Rmd`,
+`interferon_model/scripts/R/july_2026/01_scRNASeq_projections_Sun.Rmd`.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(ggrepel)
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(ggVennDiagram)
+library(purrr)
+library(scales)
+library(patchwork)
+library(Seurat)
+
+source('/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R')
+```
+
+
+## Initial settings
+
+
+```{r settings, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+dirs <- section_dirs("figure_01")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+```
+
+
+# Loading the IFN signature
+
+Dynamically regulated genes after IFN-β treatment, inferred with the splines
+approach in `00_ifn_dynamical_genes.R` (IFN treated vs control samples).
+
+
+```{r}
+ifn_set <- readRDS(file.path(path2project,
+                             'analysis/2026_May/IFNb_Response_Omnibus_Strict_FCcorresp.rds'))
+length(ifn_set)
+```
+
+
+# Loading the dsRNA RIG-I KO signature
+
+Dynamically regulated genes after dsRNA electroporation in RIG-I KO cells,
+inferred with the same approach (`00_EPO_dynamical_genes.R`).
+
+
+```{r}
+dsRNA_set <- readRDS(file.path(path2project,
+                               'analysis/2026_May/wt_ko_splines_gene_sets.rds'))
+ko_set <- dsRNA_set$ko
+length(ko_set)
+```
+
+
+# Loading IFN treated samples data
+
+In-house bulk RNA-Seq data of A549 cells treated with IFN at different time
+points. We use VST transformed values. The `dsRNA-16h` sample is removed.
+
+
+```{r loading_ifn_data, results="show", message=FALSE, warning=FALSE, error=FALSE}
+path2ifn <- file.path(path2project, "analysis/01_QC_visualization")
+ifn_df <- read_tsv(file.path(path2ifn, 'vst_interferon_RNASeq.tsv.gz'),
+                   show_col_types = FALSE) %>%
+                as.data.frame()
+colnames(ifn_df) <- gsub('raw_counts_', '', colnames(ifn_df))
+
+## Removing dsRNA 16 hours
+ifn_df <- ifn_df[, colnames(ifn_df) != 'dsRNA-16h']
+
+ifn_ensembl_ids <- ifn_df$ensemb_id
+ifn_mtx <- dplyr::select(ifn_df, -ensemb_id) %>%
+                as.matrix()
+rownames(ifn_mtx) <- ifn_ensembl_ids
+
+dim(ifn_mtx)
+colnames(ifn_mtx)
+```
+
+
+# Loading dsRNA electroporated samples data
+
+VST values of the WT and RIG-I KO dsRNA time course. The columns
+`gene_name` and `ensembl_id` are used as gene annotation. Sample names
+encode `<genotype>_<condition>-<time>h`.
+
+
+```{r loading_normalized_gex_matrix, message=FALSE, warning=FALSE, error=FALSE}
+path2vst_dsRNA <- "/media/ag-cherrmann/cramirez/rnaSeq_dsRNA/analysis/sept_2025/01_exploratory_data_analysis/vst_dsRNA_sept2025.tsv.gz"
+gex <- readr::read_tsv(path2vst_dsRNA, show_col_types = FALSE) %>%
+              as.data.frame()
+
+colnames(gex) <- gsub('raw_counts_|_featureCounts.tsv',
+                      '', colnames(gex))
+
+gene_anns <- dplyr::select(gex, gene_name, ensembl_id)
+
+rownames(gex) <- gex$ensembl_id
+
+## RIG-I KO samples only
+epo_gex <- gex[,grepl('KO|gene_name|ensembl_id',
+                      colnames(gex))]
+head(epo_gex, 2)
+```
+
+
+# Venn diagram (Figure 1)
+
+Intersection of the IFN and RIG-I KO dynamic genes. The gene sets are also
+exported as a table.
+
+
+```{r, fig.height=3, fig.width=3}
+gene_sets <- list(
+  IFN = ifn_set,
+  KO  = ko_set
+)
+
+gene_sets_list <- lapply(gene_sets,
+                         function(gene_set){
+                                 data.frame(ensembl_id=gene_set)
+})
+gene_sets_list <- lapply(gene_sets_list,
+                         function(df){
+                                 mutate(df,
+                                        gene_symbol=plyr::mapvalues(
+                                                x = ensembl_id,
+                                                from = gene_anns$ensembl_id,
+                                                to = gene_anns$gene_name,
+                                                warn_missing = FALSE
+                                        ))
+                         })
+lapply(gene_sets_list, dim)
+writexl::write_xlsx(
+        gene_sets_list,
+        file.path(path2analysis, 'gene_sets_venn_diagram.xlsx')
+)
+
+p <- ggVennDiagram(
+  gene_sets,
+  label = "count"
+) +
+  scale_fill_gradient(low = "grey90", high = "grey30") +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 12)
+  )
+
+pdf(file.path(path2figures, 'venn_diagram_ko_ifn_aleksandr_genes.pdf'),
+    height=3, width=3)
+p
+dev.off()
+
+p
+```
+
+
+## Extracting RIG-I-only, IFN-only and shared genes
+
+
+```{r}
+## Genes only in the IFN set
+ifn_only <- setdiff(ifn_set, ko_set)
+
+## Genes only in the RIG-I KO set
+rigi_only <- setdiff(ko_set, ifn_set)
+
+## Genes shared by both sets
+shared_genes <- intersect(ifn_set, ko_set)
+
+sapply(list(ifn_only=ifn_only,
+            rigi_only=rigi_only,
+            shared_genes=shared_genes),
+       length)
+```
+
+
+# Heatmap of the dynamic genes (Figure 1)
+
+Heatmap of the union of RIG-I KO and IFN dynamic genes across the RIG-I KO
+dsRNA time course and the IFN time course (row-scaled VST values). Genes are
+split by membership (KO only, IFN only, both).
+
+The original analysis loaded the gene sets from the files below. They
+contain exactly the same genes as the sets loaded above (checked here); we
+keep them so that the gene order (and hence the row clustering) is identical
+to the published panel.
+
+
+```{r, heatmap_gene_sets}
+ifn_clusters_df <- readxl::read_xlsx(
+        file.path(path2project,
+                  'analysis/figure_00_genes_clusters_inference_IFN_aleksandr',
+                  'mfuzz_results_interferon_rf_splines_aleksandr.xlsx')
+        )
+ifn_genes_ids <- ifn_clusters_df$Gene
+
+dsRNA_set_hm <- readRDS(file.path(path2project,
+                                  'data/aleksandr_genes/wt_ko_splines_gene_sets.rds'))
+
+stopifnot(setequal(ifn_genes_ids, ifn_set),
+          setequal(dsRNA_set_hm$ko, ko_set))
+
+selected_genes <- c(dsRNA_set_hm$ko, ifn_genes_ids)
+length(unique(selected_genes))
+```
+
+
+Concatenating the dsRNA and IFN matrices.
+
+
+```{r}
+shared_genes1 <- intersect(selected_genes, rownames(ifn_mtx))
+shared_genes2 <- intersect(shared_genes1, gex$ensembl_id)
+
+epo_mtx <- dplyr::select(gex, `KO_control-16h`:`WT_polyC-8h`)
+rownames(epo_mtx) <- gex$ensembl_id
+concatenated_hm_mtx <- cbind(epo_mtx[shared_genes2,],
+                             ifn_mtx[shared_genes2,]) %>%
+                        as.matrix()
+dim(concatenated_hm_mtx)
+```
+
+
+Sample annotations are parsed from the sample names.
+
+
+```{r}
+samples <- colnames(concatenated_hm_mtx)
+
+sample_anno <- data.frame(
+  sample = samples,
+  stringsAsFactors = FALSE
+)
+
+sample_anno$phenotype <- ifelse(grepl("^KO_", samples), "KO",
+                         ifelse(grepl("^WT_", samples), "WT", "WT_IFN"))
+
+sample_anno$condition <- ifelse(grepl("control", samples), "control",
+                         ifelse(grepl("dsRNA", samples), "dsRNA",
+                         ifelse(grepl("polyC", samples), "polyC",
+                         ifelse(grepl("IFN", samples), "IFN", NA))))
+
+sample_anno$time <- as.numeric(sub(".*-(\\d+)h.*", "\\1", samples))
+
+sample_anno$time_discrete <- factor(
+  sample_anno$time,
+  levels = sort(unique(sample_anno$time)),
+  ordered = TRUE
+)
+rownames(sample_anno) <- sample_anno$sample
+```
+
+
+Removing the WT dsRNA samples, ordering the samples and drawing the heatmap.
+
+
+```{r, fig.width=6, fig.height=4}
+## colours specific to this panel
+heatmap_condition_colors <- c("control"="#8DA0CB",
+                              "IFN"="#F98E3D",
+                              "dsRNA"='#A6D854',
+                              "polyC"='#66C2A5')
+
+harmonized_colors <- c(
+  "0"   = "#01665E",
+  "1"   = "#247968",
+  "2"   = "#408772",
+  "4"   = "#5D977C",
+  "6"   = "#7BA790",
+  "8"   = "#9BB79E",
+  "12"  = "#B8C7A9",
+  "16"  = "#D0B88E",
+  "24"  = "#DBB993",
+  "48"  = "#C18A63",
+  "72"  = "#A65B33",
+  "96"  = "#8C2D04"
+)
+
+phenotype_colors <- c(WT='red',
+                      WT_IFN='red',
+                      KO='steelblue')
+
+selected_samples <- grep('WT',
+                         colnames(concatenated_hm_mtx),
+                         invert = TRUE,
+                         value = TRUE)
+
+concatenated_subset_mtx <- concatenated_hm_mtx[,selected_samples]
+sample_subset_anno <- sample_anno[selected_samples,]
+
+phenotype_levels <- c("WT", "KO", "WT_IFN")
+condition_levels <- c("dsRNA", "IFN", "polyC", "control")
+
+sample_subset_anno$phenotype <- factor(sample_subset_anno$phenotype,
+                                       levels = phenotype_levels)
+sample_subset_anno$condition <- factor(sample_subset_anno$condition,
+                                       levels = condition_levels)
+sample_subset_anno$time_discrete <- factor(
+  sample_subset_anno$time_discrete,
+  levels = sort(unique(as.numeric(as.character(sample_subset_anno$time_discrete)))),
+  ordered = TRUE
+)
+
+sample_order <- order(
+  sample_subset_anno$phenotype,
+  sample_subset_anno$condition,
+  sample_subset_anno$time_discrete
+)
+
+sample_subset_anno <- sample_subset_anno[sample_order, ]
+concatenated_subset_mtx <- concatenated_subset_mtx[, sample_subset_anno$sample]
+
+concatenated_subset_mtx_scaled <- t(scale(t(concatenated_subset_mtx)))
+
+## Column annotation
+ha_col <- HeatmapAnnotation(
+  Phenotype = sample_subset_anno$phenotype,
+  Condition = sample_subset_anno$condition,
+  Time = sample_subset_anno$time_discrete,
+  col = list(
+    Phenotype = phenotype_colors,
+    Condition = heatmap_condition_colors,
+    Time = harmonized_colors
+  ),
+  annotation_name_side = "left",
+  show_annotation_name = TRUE
+)
+
+col_fun <- colorRamp2(
+  c(min(concatenated_subset_mtx_scaled),
+    0, max(concatenated_subset_mtx_scaled)),
+  c("#2166AC", "white", "#B2182B")
+)
+
+## Row annotation: gene set membership
+signatures_list <- list(ko=dsRNA_set_hm$ko,
+                        ifn=ifn_genes_ids)
+
+genes <- rownames(concatenated_subset_mtx)
+gene_category <- ifelse(
+  genes %in% signatures_list$ko & genes %in% signatures_list$ifn, "both",
+  ifelse(
+    genes %in% signatures_list$ko, "ko",
+    ifelse(
+      genes %in% signatures_list$ifn, "ifn",
+      "none"
+    )
+  )
+)
+gene_category <- factor(
+  gene_category,
+  levels = c("ko", "ifn", "both", "none")
+)
+
+gene_category_colors <- c(
+  ko = "#1b9e77",
+  ifn = "#d95f02",
+  both = "#7570b3",
+  none = "grey80"
+)
+
+ha_row <- rowAnnotation(
+  Signature = gene_category,
+  col = list(Signature = gene_category_colors),
+  show_annotation_name = TRUE
+)
+
+hm <- Heatmap(
+  concatenated_subset_mtx_scaled,
+  name = "Signal",
+  col = col_fun,
+  top_annotation = ha_col,
+  left_annotation = ha_row,
+
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+
+  row_split = gene_category
+)
+
+pdf(file.path(path2figures, "heatmap_concatenated_subset_mtx.pdf"),
+     width=6, height=4)
+draw(hm)
+dev.off()
+
+hm
+```
+
+
+# Concatenated PCA (IFN + RIG-I KO) (Figure 1)
+
+For the PCA we remove the shared genes in order to remove the common signal
+and isolate the RIG-I-only and IFN-only programs. VST values of the IFN and
+RIG-I KO samples are concatenated.
+
+
+```{r}
+concatenated_genes <- unique(c(ifn_only, rigi_only))
+length(concatenated_genes)
+
+## dsRNA RIG-I KO matrix
+epo_mtx_subset <- dplyr::select(epo_gex, -gene_name, -ensembl_id)
+epo_mtx_subset <- epo_mtx_subset[concatenated_genes, ]
+
+## IFN matrix
+ifn_mtx_subset <- ifn_mtx[concatenated_genes, ]
+
+intersected_genes <- intersect(rownames(ifn_mtx_subset),
+                               rownames(epo_mtx_subset))
+
+concatenated_mtx <- cbind(ifn_mtx_subset[intersected_genes,],
+                          epo_mtx_subset[intersected_genes,])
+dim(concatenated_mtx)
+```
+
+
+```{r}
+pca_concatenated <- prcomp(t(concatenated_mtx),
+                           center = TRUE,
+                           retx = TRUE,
+                           rank. = 10)
+
+projection_df <- pca_concatenated$x %>%
+                      as.data.frame()
+
+samples_annotations_df <- data.frame(
+  sample = rownames(projection_df),
+  stringsAsFactors = FALSE
+) |>
+  dplyr::mutate(
+    genotype = dplyr::case_when(
+      stringr::str_detect(sample, "KO") ~ "KO",
+      stringr::str_detect(sample, "WT")  ~ "WT",
+      .default = 'IFN'
+    ),
+    condition = dplyr::case_when(
+      stringr::str_detect(sample, "control") ~ "control",
+      stringr::str_detect(sample, "IFN")     ~ "IFN",
+      stringr::str_detect(sample, "polyC")   ~ "polyC",
+      stringr::str_detect(sample, "dsRNA")   ~ "dsRNA",
+      TRUE ~ NA_character_
+    ),
+    time = stringr::str_extract(sample, "\\d+(?=h)") |> as.numeric()
+  )
+```
+
+
+```{r, fig.width=6, fig.height=5}
+stopifnot(all(rownames(projection_df) == samples_annotations_df$sample))
+projection_annotated_df <- cbind(projection_df,
+                                 samples_annotations_df)
+
+explained_var <- (pca_concatenated$sdev^2) /
+                      sum(pca_concatenated$sdev^2) * 100
+
+pc1_var <- round(explained_var[1], 1)
+pc2_var <- round(explained_var[2], 1)
+
+pc12_projection <- projection_annotated_df %>%
+  ggplot(aes(
+    PC1, PC2,
+    colour = genotype,
+    shape  = condition,
+    label  = time
+  )) +
+  geom_point(size=4) +
+  geom_text_repel(size = 6) +
+  scale_colour_manual(
+    values = c(WT = "red", KO = "steelblue", IFN = "forestgreen")
+  ) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  labs(
+    x = paste0("PC1 (", pc1_var, "% variance)"),
+    y = paste0("PC2 (", pc2_var, "% variance)")
+  ) +
+  theme_classic() +
+  theme(
+    axis.text  = element_text(size = 16),
+    axis.title = element_text(size = 18)
+  )
+
+pdf(file.path(path2figures, 'pca_concatenated_aleksandr_ko_ifn_genes_noWT.pdf'),
+    width=6, height=5)
+pc12_projection
+dev.off()
+
+pc12_projection
+```
+
+
+The PCA is saved so that Supplementary Figure 1 can project the WT samples
+onto it.
+
+
+```{r}
+saveRDS(list(pca = pca_concatenated,
+             intersected_genes = intersected_genes,
+             pc1_var = pc1_var,
+             pc2_var = pc2_var),
+        file.path(path2analysis, 'pca_concatenated.rds'))
+```
+
+
+# Defining the RIG-I-only and STAT-only signatures
+
+Genes are ranked by their PC1 and PC2 loadings (Ensembl IDs converted to
+gene symbols). The RIG-I-only signature is the top-100 genes of PC1 and the
+STAT-only signature the bottom-100 genes of PC2. Interferon genes and OASL
+are removed from both signatures.
+
+
+```{r}
+pc1 <- pca_concatenated$rotation %>%
+        as.data.frame() %>%
+               dplyr::arrange(desc(PC1)) %>%
+                dplyr::select(PC1)
+
+pc2 <- pca_concatenated$rotation %>%
+        as.data.frame() %>%
+               dplyr::arrange(desc(PC2)) %>%
+                dplyr::select(PC2)
+
+pc_signatures <- list(pc1=pc1,
+                      pc2=pc2)
+
+## Ensembl ID to gene symbol
+pc_signatures_gs <- lapply(pc_signatures,
+                           function(genes_df){
+                                   gene_names <- plyr::mapvalues(
+                                           x = rownames(genes_df),
+                                           from = gene_anns$ensembl_id,
+                                           to = gene_anns$gene_name,
+                                           warn_missing = FALSE
+                                   )
+                                   genes_df$'gene_symbol' <- gene_names
+                                   genes_df$'ensembl_id' <- rownames(genes_df)
+                                   genes_df <- genes_df[!duplicated(genes_df$gene_symbol),]
+                                   rownames(genes_df) <- genes_df$gene_symbol
+                                   genes_df
+                           })
+
+pc_ranks <- lapply(pc_signatures_gs, function(df) {
+  v <- df[[1]]
+  names(v) <- rownames(df)
+  sort(v, decreasing = TRUE)
+})
+
+rigi_only_sign <- pc_ranks$pc1 %>%
+                   head(100) %>%
+                   names
+
+stat_only_sign <- pc_ranks$pc2 %>%
+                   tail(100) %>%
+                   names
+
+signatures_gene_symbol <- list(rigi_only=rigi_only_sign,
+                               stat_only=stat_only_sign)
+
+signatures_gene_symbol <- lapply(signatures_gene_symbol,
+                                 function(genes){
+                                         grep('IFN|OASL', genes,
+                                              value = TRUE,
+                                              invert = TRUE)
+                                 })
+sapply(signatures_gene_symbol, length)
+```
+
+
+The signatures are saved and used by all other sections (`path2signs` in
+`settings.R`). We check that they are identical to the signatures used in the
+original analysis.
+
+
+```{r}
+signatures_gene_symbol_df <- lapply(signatures_gene_symbol,
+                                    function(genes){
+                                            data.frame(gene_symbol = genes)
+                                    })
+writexl::write_xlsx(
+        x = signatures_gene_symbol_df,
+        path = file.path(path2analysis, 'rigi_vs_stat_only_signatures.xlsx')
+)
+saveRDS(signatures_gene_symbol, path2signs, compress = TRUE)
+
+original_signatures <- readRDS(file.path(path2project,
+                                         'analysis/2026_May/rigi_vs_stat_only_signatures.rds'))
+identical(original_signatures, signatures_gene_symbol)
+```
+
+
+# Scoring the A549 scRNA-Seq data (Figure 1)
+
+In-house scRNA-Seq data of A549 cells electroporated with dsRNA or polyC
+(3 and 16 hours), with or without IFN priming. Cells are scored with the
+signatures using `AddModuleScore`.
+
+
+```{r fig.height=4.5, fig.width=5.5}
+path2a549_sc <- "/media/ag-cherrmann/cramirez/multiome_ifn_project/data/seurat/ifn_treated_cells_rnaseq_processed_seurat.rds"
+a549_cells <- readRDS(path2a549_sc)
+table(a549_cells$orig.ident)
+
+umap_plot <- DimPlot(a549_cells,
+        pt.size = 2.5,
+        alpha = 0.5,
+        label = TRUE)
+```
+
+
+```{r fig.width=12, fig.height=4.5}
+a549_cells <- AddModuleScore(a549_cells,
+                           features = signatures_gene_symbol,
+                           name = names(signatures_gene_symbol))
+
+ref_line_size <- 0.8
+
+scores_plot <- a549_cells@meta.data %>%
+  ggplot(aes(
+    x = rigi_only1,
+    y = stat_only2,
+    colour = orig.ident
+  )) +
+  stat_ellipse(
+    aes(group = orig.ident),
+    type = "norm",
+    level = 0.68,
+    linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    colour = "gray30",
+    linewidth = ref_line_size
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    colour = "gray30",
+    linewidth = ref_line_size
+  ) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "gray30",
+    linewidth = ref_line_size
+  ) +
+  geom_point(size = 1.6, alpha = 0.5) +
+  scale_x_continuous(breaks = pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = pretty_breaks(n = 3)) +
+  labs(
+    x = "RIGI–only signature",
+    y = "IFN-only signature",
+    colour = "Sample"
+  ) +
+  theme_classic() +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text  = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text  = element_text(size = 11)
+  )
+
+pdf(file.path(path2figures, 'scoring_ifn_rig_ionly_signatures.pdf'),
+    width=12, height=4.5)
+gridExtra::grid.arrange(umap_plot, scores_plot, ncol = 2)
+dev.off()
+
+gridExtra::grid.arrange(umap_plot, scores_plot, ncol = 2)
+```
+
+
+# Influenza A infected A549 cells (Sun et al. 2020) (Figure 1)
+
+scRNA-Seq of A549 cells infected with influenza A virus (A/Perth/16/2009,
+GSE143167). Libraries are mock, bystander and infected cells; the expression
+of the viral NA segment (gene `NA`) is used as a proxy of viral load.
+
+
+## Processing (not run)
+
+The raw cellranger output was processed as follows and saved as a Seurat
+object, which is loaded in the next chunk. The viral gene `NA` was renamed
+to `NA_vir` in the features file to avoid it being read as a missing value.
+
+
+```{r, sun_processing, eval=FALSE}
+library(DropletUtils)
+library(scran)
+path2sun <- '/media/bq-storage/ag-cherrmann/cramirez/data/GSE143167_cellranger_hg38_perth09/'
+
+sce <- read10xCounts(path2sun, col.names=TRUE)
+e.out <- emptyDrops(counts(sce))
+sce <- sce[,which(e.out$FDR <= 0.001)]
+
+rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+rownames(sce)[rownames(sce) %in% "NA_vir"] <- "NA"
+
+Lib.ID <- strsplit(sce$Barcode, "-") %>% sapply(function(x) x[2]) %>% factor
+levels(Lib.ID) <- c("Bystander","Mock","Infected")
+sce$Library <- factor(Lib.ID, levels = c("Mock","Bystander","Infected"))
+
+sun_seurat <- CreateSeuratObject(counts = counts(sce),
+                                 project = "Sun_scRNA",
+                                 min.features = 0,
+                                 min.cells = 0)
+sun_seurat$'library' <- sce$Library
+
+sun_seurat <- subset(sun_seurat, nCount_RNA > 20000 )
+sun_seurat <- NormalizeData(sun_seurat)
+sun_seurat <- FindVariableFeatures(sun_seurat)
+sun_seurat <- ScaleData(sun_seurat)
+sun_seurat <- RunPCA(sun_seurat)
+sun_seurat <- RunUMAP(sun_seurat, dims = 1:45)
+
+saveRDS(sun_seurat,
+        file = paste0(path2sun, '/sun_2020_processed_seurat.rds'))
+```
+
+
+```{r, loading_sun}
+path2sun <- '/media/bq-storage/ag-cherrmann/cramirez/data/GSE143167_cellranger_hg38_perth09/'
+sun_seurat <- readRDS(file.path(path2sun, 'sun_2020_processed_seurat.rds'))
+table(sun_seurat$library)
+```
+
+
+## Scoring cells
+
+Cells are scored with the RIG-I-only and STAT-only signatures together with
+the MSigDB gene sets "response to virus", "interferon gamma response" and
+"response to interferon beta" (interferon genes removed from all sets). The
+scores were computed when the object was created (May 2026) and are stored in
+its metadata (`stat_only1`, `rigi_only2`, `viral_go3`, ...).
+
+As a check, the cells are re-scored here with the final signatures and the
+current MSigDB gene sets, in the same gene set order. The RIG-I-only and
+STAT-only scores are identical to the stored ones (r = 1). The
+response-to-virus score is slightly different (r ~ 0.97) because MSigDB has
+updated the GOBP_RESPONSE_TO_VIRUS gene set since. The panel is therefore
+drawn with the stored scores, which reproduces the published figure.
+
+
+```{r, scoring_sun}
+download_msigdb <- function(gene_set){
+        url <- paste0('https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=',
+                      gene_set, '&fileType=grp')
+        genes <- readLines(url)
+        genes[3:length(genes)]
+}
+
+viral_go <- download_msigdb('GOBP_RESPONSE_TO_VIRUS')
+ifnl_go <- download_msigdb('HALLMARK_INTERFERON_GAMMA_RESPONSE')
+ifnb_go <- download_msigdb('GOBP_RESPONSE_TO_INTERFERON_BETA')
+
+signatures_sun <- list(stat_only=signatures_gene_symbol$stat_only,
+                       rigi_only=signatures_gene_symbol$rigi_only,
+                       viral_go=viral_go,
+                       ifnl_go=ifnl_go,
+                       ifnb_go=ifnb_go)
+signatures_sun <- lapply(signatures_sun,
+                         function(genes){
+                                 grep(pattern = 'IFN', genes, value = TRUE,
+                                      invert = TRUE)
+                         })
+sapply(signatures_sun, length)
+
+## scores stored in the processed object (used for the panel)
+stored_scores <- FetchData(sun_seurat,
+                           vars = c('stat_only1', 'rigi_only2', 'viral_go3'))
+
+score_columns <- paste0(names(signatures_sun), seq_along(signatures_sun))
+sun_rescored <- sun_seurat
+sun_rescored@meta.data <- sun_rescored@meta.data[, ! colnames(sun_rescored@meta.data) %in%
+                                                     score_columns]
+sun_rescored <- AddModuleScore(
+  object = sun_rescored,
+  features = signatures_sun,
+  name = names(signatures_sun)
+)
+
+## agreement with the stored scores
+sapply(colnames(stored_scores),
+       function(x) cor(stored_scores[[x]], sun_rescored@meta.data[[x]]))
+rm(sun_rescored)
+```
+
+
+## RIG-I-only and STAT-only scores vs viral load
+
+Top: RIG-I-only vs STAT-only score; bottom: response-to-virus GO score vs
+STAT-only score. Cells are coloured by the expression of the viral NA
+segment and a linear model is fitted per library.
+
+
+```{r, fig.width=7, fig.height=2.5}
+md <- FetchData(sun_seurat, vars = c('NA',
+                                     'stat_only1',
+                                     'rigi_only2',
+                                     'viral_go3',
+                                     'library'))
+md$'viral_expression' <- md$`NA`
+
+## Linear model per library: RIG-I-only ~ STAT-only
+lm_stats <- md %>%
+  group_by(library) %>%
+  do({
+    model <- lm(rigi_only2 ~ stat_only1, data = .)
+    broom::tidy(model) %>%
+      filter(term == "stat_only1") %>%
+      mutate(
+        r2 = summary(model)$r.squared
+      )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    label = paste0(
+      "b = ", round(estimate, 3),
+      "\nR² = ", round(r2, 3),
+      "\np = ", format.pval(p.value, digits = 3, eps = 0.001)
+    )
+  )
+
+p1 <- md %>%
+  dplyr::arrange(viral_expression) %>%
+  ggplot(aes(
+    x = rigi_only2,
+    y = stat_only1,
+    colour = viral_expression
+  )) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_point(shape = 3, alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "red") +
+  geom_text(
+    data = lm_stats,
+    aes(x = Inf, y = Inf, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = 1.3,
+    color = "black",
+    size = 3.5
+  ) +
+  scale_x_continuous(
+    name = "RIG-I–only score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  scale_y_continuous(
+    name = "STAT-only score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10)
+  ) +
+  facet_wrap(~library) +
+  scale_colour_viridis()
+
+p1
+```
+
+
+```{r, fig.width=7, fig.height=2.5}
+## Linear model per library: viral GO ~ STAT-only
+lm_stats <- md %>%
+  group_by(library) %>%
+  do({
+    model <- lm(viral_go3 ~ stat_only1, data = .)
+    broom::tidy(model) %>%
+      filter(term == "stat_only1") %>%
+      mutate(
+        r2 = summary(model)$r.squared
+      )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    label = paste0(
+      "b = ", round(estimate, 3),
+      "\nR² = ", round(r2, 3),
+      "\np = ", format.pval(p.value, digits = 3, eps = 0.001)
+    )
+  )
+
+p2 <- md %>%
+  dplyr::arrange(viral_expression) %>%
+  ggplot(aes(
+    x = viral_go3,
+    y = stat_only1,
+    colour = viral_expression
+  )) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_point(shape = 3, alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "red") +
+  geom_text(
+    data = lm_stats,
+    aes(x = Inf, y = Inf, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = 1.3,
+    color = "black",
+    size = 3.5
+  ) +
+  scale_x_continuous(
+    name = "RESPONSE TO VIRUS GO Term score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  scale_y_continuous(
+    name = "STAT-only score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10)
+  ) +
+  facet_wrap(~library) +
+  scale_colour_viridis()
+
+p2
+```
+
+
+```{r, fig.width=5, fig.height=3.5}
+pdf(file.path(path2figures, "scatterplot_scores_rigi_stat_viralgo.pdf"),
+    width=5, height=3.5)
+p1 / p2
+dev.off()
+
+p1 / p2
+```
+
+
+# Session information
+
+
+```{r, session_info}
+sessionInfo()
+```

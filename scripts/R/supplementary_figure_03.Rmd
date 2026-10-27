@@ -1,0 +1,303 @@
+---
+title: "Supplementary Figure 3: Children vs adult neutrophils of SARS-CoV-2 patients (scRNA-Seq)"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This markdown reproduces the panels of **Supplementary Figure 3**. It
+complements Figure 3 (`figure_03.Rmd`), in which the RIG-I-only and
+STAT-only signatures were projected onto the nasal-swab single-cell
+RNA-Seq data of SARS-CoV-2 positive and negative children and adults of
+[Loske et al. 2021, Nat. Biotechnol.](https://www.nature.com/articles/s41587-021-01037-9).
+In Figure 3, neutrophils carrying SARS-CoV-2 transcripts from children
+showed high RIG-I-only scores. Here, we compare these neutrophils between
+SARS-CoV-2 positive children and adults with a differential expression
+analysis (Seurat `FindMarkers`, Wilcoxon test) and a gene set enrichment
+analysis (GSEA, GO Biological Process, `clusterProfiler::gseGO`) of the
+genes up-regulated in children.
+
+Panels produced (all saved in `figures/supplementary_figure_03/`):
+
+| Panel file | Content |
+|---|---|
+| `volcano_plot_childern_vs_adult.pdf` | Volcano plot of the differential expression between neutrophils of SARS-CoV-2 positive children and adults; RIG-I-only signature genes in blue |
+| `dotplot_gsea.pdf` | GSEA (GO BP) of the top 200 genes up-regulated in children neutrophils |
+
+The code was taken from the original analysis script
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/03_scRNASeq_projections_loske.Rmd`
+(which wrote `volcano_plot_childern_vs_adult.pdf` to `figures/2026_May/`
+and `dotplot_gsea.pdf` to `figures/2026_September/` on 2026-10-01). Only
+the code needed for these panels was kept; plotting code, PDF sizes and
+aesthetics are unchanged.
+
+**Dependency on `figure_03.Rmd`.** The neutrophil subset (Seurat object of
+SARS-CoV-2 transcript-positive neutrophils from SARS-CoV-2 positive
+children and adults, with RIG-I-only / STAT-only module scores) is
+defined and saved by `figure_03.Rmd`, which therefore has to be run first.
+
+
+# Input data
+
+| Input | Absolute path / source |
+|---|---|
+| Neutrophil subset (written by `figure_03.Rmd`; derived from the processed Seurat object of Loske et al. 2021, `/media/bq-storage/ag-cherrmann/cramirez/data/loske_2021/210716_figshare_upload_ag_lehmann.rds`, downloaded from the figshare repository of the paper) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_03/seurat_neutrophils_scov2pos_children_vs_adults.rds` |
+| Cell metadata used (column of the Seurat object, as provided by Loske et al.) | `covid_kid1` (SARS-CoV-2 status x age group; here `pos_children` vs `pos_adult`) |
+| RIG-I-only / STAT-only signatures (written by `figure_01.Rmd`) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/rigi_vs_stat_only_signatures.rds` (`path2signs` in `settings.R`) |
+| GO Biological Process annotation | Bioconductor package `org.Hs.eg.db` (version in `sessionInfo()` below) |
+| Shared settings (paths, colours) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R` |
+
+No MSigDB gene sets and no web services are used for the panels of this
+figure.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(ggrepel)
+library(tibble)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+
+source("/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R")
+```
+
+
+## Initial settings
+
+Output folders of this section (`figures/supplementary_figure_03/` and
+`analysis/supplementary_figure_03/` in the repository), and the folder of
+Figure 3 holding the neutrophil subset.
+
+```{r setting_up}
+dirs <- section_dirs("supplementary_figure_03")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+
+path2fig03_analysis <- file.path(path2repo, "analysis", "figure_03")
+```
+
+
+## Loading signatures
+
+RIG-I-only and STAT-only signatures defined in Figure 1, processed as in
+`figure_03.Rmd` (interferon genes IFNB / IFNL removed). The RIG-I-only
+genes are highlighted in the volcano plot.
+
+```{r loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             genes[!grepl('IFNB|IFNL', genes)]
+})
+signatures <- signatures[c(2,1)]
+str(signatures)
+```
+
+
+## Loading the neutrophil subset
+
+SARS-CoV-2 transcript-positive neutrophils of SARS-CoV-2 positive donors
+(see `figure_03.Rmd`, section *Neutrophil subset for the children vs
+adults comparison*).
+
+```{r loading_neutrophils}
+seurat_subset <- readRDS(file.path(path2fig03_analysis,
+                                   "seurat_neutrophils_scov2pos_children_vs_adults.rds"))
+seurat_subset
+seurat_subset$covid_kid1 %>% table
+```
+
+
+## Differential expression children vs adults (panel `volcano_plot_childern_vs_adult.pdf`)
+
+`FindMarkers` (Wilcoxon test, no fold-change or detection filters)
+comparing neutrophils of SARS-CoV-2 positive children (`pos_children`)
+vs adults (`pos_adult`). The full table is saved to
+`analysis/supplementary_figure_03/degs_childres_vs_adults.xlsx` (same file
+name as in the original analysis). The volcano plot labels the top 8 up-
+and down-regulated genes (by adjusted p-value) and OASL; RIG-I-only
+signature genes are shown in blue.
+
+```{r degs_vulcano, fig.width=6, fig.height=4}
+# Set identity
+Idents(seurat_subset) <- seurat_subset$covid_kid1
+
+# Differential expression
+de_res <- FindMarkers(
+  seurat_subset,
+  ident.1 = "pos_children",
+  ident.2 = "pos_adult",
+  logfc.threshold = 0,
+  min.pct = 0.0
+)
+
+
+
+# Add gene names
+de_res <- de_res %>%
+  rownames_to_column("gene")
+
+# Prepare volcano data
+de_res <- de_res %>%
+  mutate(
+    log10_padj = -log10(p_val_adj),
+    significant = p_val_adj < 0.05
+  )
+
+# Top 8 positive (children-enriched)
+top_pos <- de_res %>%
+  filter(avg_log2FC > 0) %>%
+  arrange(p_val_adj) %>%
+  slice_head(n = 8)
+
+# Top 8 negative (adult-enriched)
+top_neg <- de_res %>%
+  filter(avg_log2FC < 0) %>%
+  arrange(p_val_adj) %>%
+  slice_head(n = 8)
+
+writexl::write_xlsx(
+       de_res,
+       path = paste0(path2analysis,
+                     "/degs_childres_vs_adults.xlsx")
+)
+
+# OAS genes
+oas_genes <- de_res %>%
+  filter(grepl("OASL", gene))
+
+# Combine all labels
+label_genes <- bind_rows(top_pos, top_neg, oas_genes) %>%
+  distinct(gene, .keep_all = TRUE)
+
+# Volcano plot
+vulcano_child_vs_adult <- ggplot(subset(de_res, log10_padj > 0 ),
+       aes(x = avg_log2FC, y = log10_padj)) +
+  geom_point(aes(colour=significant),
+             alpha = 0.6,
+             size = 3) +
+        geom_point(data = subset(de_res,
+                                 gene %in% signatures$rigi_only  &
+                                       log10_padj > 0 ),
+                   aes(x = avg_log2FC, y = log10_padj),
+                   colour = 'blue',
+             size = 3) +
+        geom_hline(yintercept = 1.3,
+                   linetype = "dashed",
+                   colour = "red",
+                   linewidth = 1.0) +
+        geom_vline(xintercept = 0,
+                   linewidth = 1.0,
+                   linetype = "dashed") +
+  scale_color_manual(values = c("grey70", "red")) +
+  geom_text_repel(
+    data = label_genes,
+    aes(label = gene),
+    size = 4,
+    max.overlaps = Inf
+  ) +
+  theme_classic() +
+  labs(
+    x = "log2 Fold Change (pos_children vs pos_adult)",
+    y = "-log10 adjusted p-value",
+    color = "Significant"
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text  = element_text(size = 12)
+  )
+
+vulcano_child_vs_adult
+
+pdf(paste0(path2figures,
+           '/volcano_plot_childern_vs_adult.pdf'),
+     width=6, height=4)
+vulcano_child_vs_adult
+dev.off()
+```
+
+
+## GSEA of genes up-regulated in children (panel `dotplot_gsea.pdf`)
+
+The top 200 significant (adjusted p < 0.05) up-regulated genes, ranked by
+log2 fold change, are mapped to Entrez IDs and tested with `gseGO` (GO
+Biological Process, no p-value cutoff). The 15 top terms are shown.
+
+`gseGO` (fgsea) uses random permutations, so the result is stochastic; the
+original analysis did not fix a seed nor cache the result. Here a seed is
+set before `gseGO` so that this markdown is reproducible (small
+differences in p-values / term order relative to the original panel are
+expected). The GSEA result is saved to
+`analysis/supplementary_figure_03/gsea_up_children_vs_adults.rds` and
+`.xlsx`. (The original script also ran the same GSEA for the genes
+up-regulated in adults, which is not part of any panel and was dropped.)
+
+```{r GSEA, fig.width=6, fig.height=6.0}
+up_genes <- de_res %>%
+  filter(significant, avg_log2FC > 0) %>%
+  arrange(desc(avg_log2FC)) %>%
+        head(200)
+
+gene_map_up <- bitr(
+  up_genes$gene,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+up_ranked <- up_genes %>%
+  inner_join(gene_map_up, by = c("gene" = "SYMBOL")) %>%
+  distinct(ENTREZID, .keep_all = TRUE)
+
+geneList_up <- up_ranked$avg_log2FC
+names(geneList_up) <- up_ranked$ENTREZID
+
+geneList_up <- sort(geneList_up, decreasing = TRUE)
+
+set.seed(1234)
+gsea_up <- gseGO(
+  geneList = geneList_up,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pvalueCutoff = 1,
+  verbose = FALSE
+)
+
+saveRDS(gsea_up,
+        file = paste0(path2analysis, "/gsea_up_children_vs_adults.rds"))
+writexl::write_xlsx(
+        as.data.frame(gsea_up@result),
+        path = paste0(path2analysis, "/gsea_up_children_vs_adults.xlsx")
+)
+
+pdf(paste0(path2figures,
+           "/dotplot_gsea.pdf"),
+    width=6, height=4.0)
+dotplot(gsea_up,
+         showCategory = 15) +
+  ggtitle("GO BP enrichment: Upregulated genes")
+dev.off()
+
+dotplot(gsea_up,
+         showCategory = 15) +
+  ggtitle("GO BP enrichment: Upregulated genes")
+```
+
+
+Session Information
+
+
+```{r session_info}
+sessionInfo()
+```

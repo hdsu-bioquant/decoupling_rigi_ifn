@@ -1,0 +1,429 @@
+---
+title: "Supplementary Figure 2: RIG-I-only vs STAT-only signatures in virus-infected single cells (CHIKV and SARS-CoV-2)"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+This markdown reproduces the two panels of **Supplementary Figure 2**. We
+project the RIG-I-only and STAT-only (IFN-only) signatures, derived from the
+A549 cell model in `figure_01.Rmd`, onto two virus-infection single-cell
+RNA-Seq datasets by computing per-cell module scores (`Seurat::AddModuleScore`):
+
+1. **`plots_chikv.pdf`** — human fibroblasts infected with chikungunya virus
+   (CHIKV; [Pott F et al., 2021](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE176361),
+   GEO GSE176361) at 6 and 24 hours post infection (hpi). Top: scatter plot of
+   RIG-I-only vs STAT-only scores per cell, coloured by the viral-RNA level
+   category of the cell (mock, bystander = `no_chikv`, `low_chikv`; the
+   `high_chikv` cells are excluded), with the RIG-I-only = 0.15 threshold
+   used to define "RIG-I-high" cells. Bottom: among RIG-I-high cells,
+   IFNB1 expression (left) and log CHIKV-nsp expression (right) per time point
+   and viral-RNA category (Kruskal-Wallis p-values).
+2. **`scatterplot_rigi_vs_stat_ravindra.pdf`** — SARS-CoV-2-infected human
+   bronchial epithelial cells (HBEC air-liquid interface cultures;
+   [Ravindra NG et al., 2021, PLoS Biol](https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.3001143),
+   GEO GSE166766). RIG-I-only vs STAT-only scores of the SARS-CoV-2-positive
+   cells (`scv2+ == 1`), coloured by IFNL1 expression and faceted by cell type.
+
+Code is taken from the original analysis scripts
+(`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/03_scRNASeq_chinkonkunia_dataset.Rmd`
+and
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/figure_03_scRNASeq_projections_ravindra.Rmd`),
+keeping only what is needed for these two panels. Plotting code and PDF sizes
+are unchanged.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(viridis)
+library(scales)
+library(ggpubr)
+library(patchwork)
+
+source("/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R")
+```
+
+
+## Settings
+
+Output folders of this section: PDFs go to `figures/supplementary_figure_02/`
+and intermediate tables to `analysis/supplementary_figure_02/` of the repo.
+
+```{r settings, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+dirs <- section_dirs("supplementary_figure_02")
+path2figures  <- dirs$figures
+path2analysis <- dirs$analysis
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+```
+
+
+## Input data
+
+All inputs are read-only; nothing is written next to them.
+
+| Input | Absolute path | Description |
+|---|---|---|
+| Signatures | `r path2signs` | RIG-I-only (94 genes) and STAT-only (99 genes) signatures defined in `figure_01.Rmd` (identical to `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/rigi_vs_stat_only_signatures.rds`, used by the original scripts). |
+| CHIKV 6 hpi | `/media/bq-storage/ag-cherrmann/cramirez/data/GSE176361_chkv_2021/GSE176361_integrated_6hpi.rds` | Processed, integrated Seurat object from GEO GSE176361 (Pott F et al., 2021; supplementary file `GSE176361_integrated_6hpi.rds.gz`, already decompressed in the data folder). Contains the `SCT` assay used for scoring. |
+| CHIKV 24 hpi | `/media/bq-storage/ag-cherrmann/cramirez/data/GSE176361_chkv_2021/GSE176361_integrated_24hpi.rds` | As above, 24 hpi (`GSE176361_integrated_24hpi.rds.gz`). |
+| Ravindra HBEC | `/media/ag-cherrmann/cramirez/interferon_model/data/ravindra_single_cells_processed/ravindra_processed_seurat.rds` | Seurat object (raw counts, one counts layer per sample) built in `/media/ag-cherrmann/cramirez/interferon_model/scripts/R/08_projecting_single_cells_on_IFN.Rmd` from the GEO GSE166766 10x matrices in `/media/ag-cherrmann/cramirez/interferon_model/data/ravindra_single_cells/` (GSM5082289_mock, GSM5082290_1dpi, GSM5082291_2dpi, GSM5082292_3dpi), with the cell annotations of Ravindra et al. (`/media/ag-cherrmann/cramirez/interferon_model/data/ravindra_single_cells_processed/cell_annotations_with_umap.tsv`) added as metadata. |
+
+Cell metadata used:
+
+* **CHIKV objects** (from the GEO objects): `timepoint` (`6hpi`, `24hpi`),
+  `chikrnalvl` (viral-RNA level category: `mock`, `no_chikv`, `low_chikv`,
+  `high_chikv`), and the viral genes `CHIKV-nsp` (non-structural) and
+  `CHIKV-sp` (structural) as features, plus host `IFNB1`.
+* **Ravindra object**: `scv2+` (1 = SARS-CoV-2-positive cell), `ctype`
+  (cell type), `percent.mt` (recomputed below for QC), and host `IFNL1`.
+
+The Ileum organoid data loaded at the top of the original Ravindra script
+(`/home/bq_cramirez/sds-hd/sd21e005/cramirez/organoids/data/COVID19_July.rda`)
+is **not** used by this panel (it only feeds a different figure,
+`rigi_vs_stat_signatures.pdf`), and is not loaded here.
+
+
+## Loading signatures
+
+As in the original scripts, IFNB/IFNL genes are removed from the signatures
+(they are the read-out we want to compare against) and the list is reordered
+to `stat_only`, `rigi_only`.
+
+```{r loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             genes[!grepl('IFNB|IFNL', genes)]
+})
+signatures <- signatures[c(2,1)]
+str(signatures)
+```
+
+
+# Panel: CHIKV-infected fibroblasts (`plots_chikv.pdf`)
+
+## Loading the CHIKV 6 hpi data
+
+The original script decompressed the `.rds.gz` GEO file next to the data
+(the `gunzip()` call, commented out). The decompressed file already exists in
+the data folder, so we read it directly and never write there.
+
+```{r loading_chikv_6hpi}
+path2chikv6hpi <- "/media/bq-storage/ag-cherrmann/cramirez/data/GSE176361_chkv_2021/GSE176361_integrated_6hpi.rds.gz"
+#gunzip(
+#  path2chikv6hpi,
+#  destname = sub("\\.gz$", "", path2chikv6hpi),
+#  overwrite = FALSE
+#)
+path_rds <- sub("\\.gz$", "", path2chikv6hpi)
+obj_chikv6hpi <- readRDS(path_rds)
+obj_chikv6hpi
+```
+
+## Scoring the cells (6 hpi)
+
+Signature genes are restricted to those present in the `SCT` assay of the
+6 hpi object; the same gene lists are used for 24 hpi. Module scores are
+computed fresh here (the GEO object does not contain these scores).
+
+```{r scoring_6hpi}
+# Make sure the genes are present in the assay
+stat_genes <- intersect(signatures$stat_only, rownames(obj_chikv6hpi[["SCT"]]))
+rigi_genes <- intersect(signatures$rigi_only, rownames(obj_chikv6hpi[["SCT"]]))
+
+obj_chikv6hpi <- AddModuleScore(
+    object = obj_chikv6hpi,
+    features = list(stat_genes, rigi_genes),
+    assay = "SCT",
+    name = c("STAT_only", "RIGI_only")
+)
+```
+
+## Loading and scoring the CHIKV 24 hpi data
+
+```{r loading_chikv_24hpi}
+path2chikv24hpi <- "/media/bq-storage/ag-cherrmann/cramirez/data/GSE176361_chkv_2021/GSE176361_integrated_24hpi.rds.gz"
+#gunzip(
+#  path2chikv24hpi,
+#  destname = sub("\\.gz$", "", path2chikv24hpi),
+#  overwrite = FALSE
+#)
+path_rds <- sub("\\.gz$", "", path2chikv24hpi)
+obj_chikv24hpi <- readRDS(path_rds)
+
+obj_chikv24hpi <- AddModuleScore(
+    object = obj_chikv24hpi,
+    features = list(stat_genes, rigi_genes),
+    assay = "SCT",
+    name = c("STAT_only", "RIGI_only")
+)
+```
+
+## Combining the scores of both time points
+
+The per-cell scores, viral-RNA category, CHIKV-nsp and IFNB1 expression of
+both time points are combined and saved to `analysis/supplementary_figure_02/`.
+
+```{r combining_scores}
+scores <- rbind(
+            FetchData(obj_chikv6hpi,
+                      vars = c("chikrnalvl", "timepoint",
+                               "STAT_only1", "RIGI_only2",
+                               "CHIKV-nsp", "IFNB1")),
+            FetchData(obj_chikv24hpi,
+                      vars = c("chikrnalvl", "timepoint",
+                               "STAT_only1", "RIGI_only2",
+                               "CHIKV-nsp", "IFNB1"))
+)
+
+saveRDS(scores, file.path(path2analysis, "chikv_cell_scores.rds"))
+
+rm(obj_chikv6hpi, obj_chikv24hpi); invisible(gc())
+```
+
+## Scatter plot (top of `plots_chikv.pdf`)
+
+RIG-I-only vs STAT-only scores coloured by viral-RNA category; `high_chikv`
+cells are excluded. The colour vector `chikrnalvl_cols` is defined here
+(in the original script it was defined in a later chunk, i.e. the PDF was
+produced from an interactive session with the colours already in memory).
+
+```{r scatterplot_chikv, fig.height=3.0, fig.width=6}
+chikrnalvl_cols <- c(
+  "mock"      = "#4C78A8",  # blue
+  "no_chikv"  = "#9E9E9E",  # gray
+  "low_chikv" = "#F58518"   # orange
+)
+
+scatterplot_chikv <- scores %>%
+        mutate(timepoint=factor(timepoint,
+                                levels = c("6hpi", "24hpi"))
+               ) %>%
+        filter(chikrnalvl != "high_chikv") %>%
+        arrange(chikrnalvl) %>%
+        ggplot(aes(x=RIGI_only2,
+                   y=STAT_only1,
+                   colour=chikrnalvl)) +
+                geom_point(alpha=0.35,
+                           size=1.5) +
+                geom_vline(xintercept = 0.15,
+                           colour="black",
+                           linetype="dashed") +
+                facet_wrap(~timepoint) +
+                        theme_bw() +
+                scale_colour_manual(values = chikrnalvl_cols)
+
+scatterplot_chikv
+```
+
+## Boxplots of RIG-I-high cells (bottom of `plots_chikv.pdf`)
+
+Cells with RIG-I-only score > 0.15 are called RIG-I-high. For these cells we
+compare IFNB1 expression and log CHIKV-nsp expression across viral-RNA
+categories (Kruskal-Wallis test per time point).
+
+```{r boxplots_chikv}
+scores <- mutate(scores,
+                 rigi_level=ifelse(RIGI_only2>0.15,
+                        "High", "Low"))
+
+boxplot_chikv <- scores %>%
+    mutate(
+        timepoint = factor(timepoint,
+                           levels = c("6hpi", "24hpi"))
+    ) %>%
+    filter(
+        rigi_level == "High",
+        chikrnalvl != "high_chikv"
+    ) %>%
+    ggplot(aes(x = timepoint,
+               y = log(`CHIKV-nsp`),
+               fill = chikrnalvl)) +
+    geom_boxplot() +
+    stat_compare_means(
+        method = "kruskal.test",
+        label = "p.format"
+    ) +
+        scale_fill_manual(values = chikrnalvl_cols) +
+    labs(
+        x = "",
+        y = "CHIKV-nsp gene expression"
+    ) +
+    theme_classic()
+
+
+boxplot_ifnb1 <- scores %>%
+    mutate(
+        timepoint = factor(timepoint,
+                           levels = c("6hpi", "24hpi"))
+    ) %>%
+    filter(
+        rigi_level == "High",
+        chikrnalvl != "high_chikv"
+    ) %>%
+    ggplot(aes(x = timepoint,
+               y = IFNB1,
+               fill = chikrnalvl)) +
+    geom_boxplot() +
+        scale_fill_manual(values = chikrnalvl_cols) +
+    stat_compare_means(
+        method = "kruskal.test",
+        label = "p.format"
+    ) +
+    labs(
+        x = "",
+        y = "IFNB1 gene expression"
+    ) +
+    theme_classic()
+```
+
+## Saving `plots_chikv.pdf`
+
+```{r saving_chikv, fig.height=6.0, fig.width=7.5}
+scatterplot_chikv / ( boxplot_ifnb1 |  boxplot_chikv )
+
+pdf(paste0(path2figures, "/plots_chikv.pdf"),
+    height=6.0, width=7.5)
+scatterplot_chikv / ( boxplot_ifnb1 |  boxplot_chikv )
+dev.off()
+```
+
+
+# Panel: SARS-CoV-2-infected HBECs, Ravindra et al. (`scatterplot_rigi_vs_stat_ravindra.pdf`)
+
+## Loading data
+
+```{r loading_ravindra}
+seurat <- readRDS(file = paste0(path2project,
+                   '/data/ravindra_single_cells_processed/ravindra_processed_seurat.rds'))
+seurat
+```
+
+## Pre-processing
+
+Cells with > 20% mitochondrial reads are removed and the counts are
+log-normalised (`NormalizeData`), which is what `AddModuleScore` and
+`FetchData(..., "IFNL1")` use (`data` layer).
+
+```{r preprocessing_ravindra}
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat,
+                                                 pattern = "^MT-")
+
+# QC filtering
+seurat_filtered <- subset(seurat, percent.mt < 20)
+
+# Normalization
+seurat_filtered <- NormalizeData(seurat_filtered)
+
+rm(seurat); invisible(gc())
+```
+
+The original script additionally ran `FindVariableFeatures()` and
+`ScaleData()`. Neither the module scores (computed on the `data` layer) nor
+the plotted IFNL1 values depend on them, so they are kept here for reference
+but not evaluated (`eval=FALSE`).
+
+```{r preprocessing_ravindra_unused, eval=FALSE}
+# Find variable features
+seurat_filtered <- FindVariableFeatures(seurat_filtered,
+                                 selection.method = "vst",
+                                 nfeatures = 5000)
+
+# Scaling
+seurat_filtered <- ScaleData(seurat_filtered,
+                             features = c(VariableFeatures(seurat_filtered),
+                                          "IFNB1"))
+```
+
+## Scoring Ravindra cells
+
+```{r scoring_ravindra}
+seurat_filtered <- AddModuleScore(
+  object = seurat_filtered,
+  features = signatures,
+  name = names(signatures)
+)
+```
+
+## Scatter plot of infected cells (`scatterplot_rigi_vs_stat_ravindra.pdf`)
+
+RIG-I-only (`rigi_only2`) vs STAT-only (`stat_only1`) scores of
+SARS-CoV-2-positive cells, coloured by IFNL1 expression and faceted by cell
+type. The per-cell table is saved to `analysis/supplementary_figure_02/`.
+
+```{r scatterplot_ravindra, fig.width=7, fig.height=5}
+md_ravindra <- FetchData(seurat_filtered,
+                         vars = colnames(seurat_filtered@meta.data))
+
+
+markers_df <- FetchData(seurat_filtered, vars = 'IFNL1')
+md_ravindra_subset <- md_ravindra[rownames(markers_df),]
+
+all(rownames(md_ravindra_subset) == rownames(markers_df))
+md_ravindra_subset <- cbind(md_ravindra_subset, markers_df)
+
+saveRDS(md_ravindra_subset[, c("sample", "ctype", "scv2+", "percent.mt",
+                               "stat_only1", "rigi_only2", "IFNL1")],
+        file.path(path2analysis, "ravindra_cell_scores.rds"))
+
+projection_ravindra <- md_ravindra_subset %>%
+        arrange(IFNL1) %>%
+  mutate(
+    Infection_status = ifelse(`scv2+` == 1, "Infected", "Non-Infected")
+  ) %>%
+        filter(Infection_status == 'Infected') %>%
+        dplyr::arrange(desc(Infection_status)) %>%
+  ggplot(aes(
+    x = rigi_only2,
+    y = stat_only1,
+    color = IFNL1
+  )) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_point() +
+        scale_colour_viridis() +
+  scale_x_continuous(
+    name = "RIG-I–only score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  scale_y_continuous(
+    name = "STAT-only score",
+    breaks = scales::pretty_breaks(n = 3)
+  ) +
+  facet_wrap(~ ctype) +
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10)
+  )
+
+
+pdf(paste0(path2figures,
+           "/scatterplot_rigi_vs_stat_ravindra.pdf"),
+    width=7, height=5)
+projection_ravindra
+dev.off()
+
+projection_ravindra
+```
+
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```

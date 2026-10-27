@@ -1,0 +1,877 @@
+---
+title: "Supplementary Figure 1 - WT projection, RIG-I-only signature characterization and benchmarking"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This markdown reproduces the panels of **Supplementary Figure 1**, which
+supports the definition of the RIG-I-only signature (Figure 1):
+
+1. **WT projection**: A549 WT samples electroporated with dsRNA / polyC /
+   mock are projected onto the concatenated PCA built with the IFN-β time
+   course and the RIG-I KO dsRNA time course (Figure 1). WT dsRNA samples
+   move along PC1 (RIG-I axis), which is not captured by the RIG-I KO or IFN
+   samples.
+2. **Single-cell heatmap** of the RIG-I-only genes (including the IFN genes)
+   in A549 cells electroporated with dsRNA / polyC, with or without IFN
+   priming.
+3. **Benchmark against canonical gene sets**: the RIG-I-only score is
+   compared with the MSigDB HALLMARK_TNFA_SIGNALING_VIA_NFKB and the
+   GOBP_RESPONSE_TO_VIRUS scores in the A549 scRNA-Seq data (scatterplots and
+   ROC curves with DeLong tests).
+4. **Enrichment analysis** (Enrichr) of the RIG-I-only signature against
+   general pathway repositories (WikiPathways, MSigDB Hallmark, KEGG, GO BP).
+
+Panels:
+
+| Panel | File (`figures/supplementary_figure_01/`) | Original script / original PDF |
+|---|---|---|
+| WT samples projected onto the concatenated PCA | `pca_concatenated_projection_wt.pdf` | `july_2026/01_rigi_stat_only_signatures_definition.Rmd` (chunks `extracting_wt` / `projecting_WT`); `figures/2026_May/` |
+| scRNA-Seq heatmap of the RIG-I-only genes (with IFN genes) | `heatmap_rigi_only_signature_with_IFNs.pdf` | `july_2026/01_rigi_vs_stat_signatures.Rmd`; `figures/2026_August/` |
+| RIG-I-only vs NF-κB / viral GO scores (scatter) | `rigi_vs_nfkb_virusgo.pdf` | `july_2026/01_rigi_vs_stat_signatures.Rmd`; `figures/2026_August/` |
+| ROC: dsRNA 3h vs dsRNA 16h (no IFN priming) | `roc_curves_rigi_vs_nfkb_viral_go_test.pdf` | `july_2026/01_rigi_vs_stat_signatures.Rmd`; `figures/2026_August/` |
+| ROC: all dsRNA vs all polyC cells | `roc_curves_rigi_vs_nfkb.pdf` | earlier version of `july_2026/01_rigi_vs_stat_signatures.Rmd` (see below); `figures/2026_August/` |
+| Enrichr results, general repositories | `scatterplot_rigi_gsea_general.pdf` | `july_2026/01_rev_00_signature_similarity.Rmd`; `figures/2026_August/` |
+
+(Original scripts are in `/media/ag-cherrmann/cramirez/interferon_model/scripts/R/`,
+original PDFs in `/media/ag-cherrmann/cramirez/interferon_model/figures/`.)
+
+
+## Which RIG-I-only signature is used in each panel
+
+Two versions of the RIG-I-only signature exist and **both are used in this
+figure**, exactly as in the original panels:
+
+* **Final signature** (`path2signs`, written by `figure_01.Rmd`; identical to
+  `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/rigi_vs_stat_only_signatures.rds`):
+  concatenated PCA of the IFN + **RIG-I KO** bulk samples, top-100 PC1 genes,
+  IFN genes and OASL removed (94 RIG-I-only genes, 99 STAT-only genes).
+  Used by `scatterplot_rigi_gsea_general.pdf`.
+* **"All-samples" signature with IFN genes**: computed in
+  `01_rigi_vs_stat_signatures.Rmd` (re-computed below, section
+  [RIG-I-only signature with IFN genes]). Same Aleksandr gene sets and same
+  procedure, but the concatenated PCA uses the IFN samples plus **all** dsRNA
+  time-course samples (WT **and** RIG-I KO) and the IFN genes are **not**
+  removed (100 genes; it contains IFNB1, IFNL1-4). The original script saved
+  it as `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_August/rigi_vs_stat_signatures.rds`
+  (2026-09-24, i.e. when the PDFs were produced); we check below that our
+  re-computation is identical. 87/100 genes are shared with the final
+  RIG-I-only signature (differences: IFNL1, IFNL3, IFNL2, IFNB1, IFNL4,
+  IFNL3P1, CXCL3, PLA2G4C, PRR15, TTC9B, NR2F1, PTGER4, GABARAPL1 only in the
+  all-samples version; SHISA7, GAD1, AL353743.4, HES1, ZNF331, NCOA7, ELMSAN1
+  only in the final version). Used by `heatmap_rigi_only_signature_with_IFNs.pdf`
+  (hence "with_IFNs"), `rigi_vs_nfkb_virusgo.pdf`,
+  `roc_curves_rigi_vs_nfkb_viral_go_test.pdf` and `roc_curves_rigi_vs_nfkb.pdf`.
+
+The WT projection panel does not use a signature; it uses the concatenated
+PCA of Figure 1 (`analysis/figure_01/pca_concatenated.rds`).
+
+
+# Input data
+
+| Input | Path | Description |
+|---|---|---|
+| IFN time course, VST matrix | `/media/ag-cherrmann/cramirez/interferon_model/analysis/01_QC_visualization/vst_interferon_RNASeq.tsv.gz` | Bulk RNA-Seq of A549 cells treated with IFN-β or control at 2-72 h; DESeq2 VST, rows = Ensembl IDs (column `ensemb_id`). Sample names encode `<condition>-<time>h` (`control-8h-a` is a second control at 8 h). Sample `dsRNA-16h` is removed. Generated in `interferon_model/scripts/R/01_QC_visualization_samples.Rmd` |
+| dsRNA time course, VST matrix + gene annotation | `/media/ag-cherrmann/cramirez/rnaSeq_dsRNA/analysis/sept_2025/01_exploratory_data_analysis/vst_dsRNA_sept2025.tsv.gz` | Bulk RNA-Seq of A549 WT and RIG-I KO cells electroporated with dsRNA, polyC or mock (control) at 2-72 h; DESeq2 VST. Sample names encode `<genotype>_<condition>-<time>h` (genotype `WT`/`KO`; condition `dsRNA`/`polyC`/`control`). The columns `gene_name` / `ensembl_id` are the gene annotation (Ensembl ID → gene symbol) used throughout. Generated in `rnaSeq_dsRNA/scripts/R/sept_2025/01_exploratory_data_analysis.Rmd` |
+| Concatenated PCA (Figure 1) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/pca_concatenated.rds` | list with `pca` (prcomp of IFN + RIG-I KO samples), `intersected_genes` (Ensembl IDs), `pc1_var`, `pc2_var`; written by `figure_01.Rmd` |
+| IFN dynamic genes (Aleksandr splines pipeline) | `/media/ag-cherrmann/cramirez/interferon_model/data/aleksandr_genes/IFNb_Response_Omnibus_Strict_FCcorresp.rds` | Ensembl IDs; identical to `interferon_model/analysis/2026_May/IFNb_Response_Omnibus_Strict_FCcorresp.rds` (used in Figure 1) |
+| dsRNA dynamic genes, WT / RIG-I KO (Aleksandr splines pipeline) | `/media/ag-cherrmann/cramirez/interferon_model/data/aleksandr_genes/wt_ko_splines_gene_sets.rds` | list (`wt`, `ko`) of Ensembl IDs; identical to `interferon_model/analysis/2026_May/wt_ko_splines_gene_sets.rds` |
+| Final RIG-I-only / STAT-only signatures | `path2signs` = `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/rigi_vs_stat_only_signatures.rds` | gene symbols; identical to `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/rigi_vs_stat_only_signatures.rds` (the file read by the original `01_rev_00_signature_similarity.Rmd`) |
+| A549 scRNA-Seq, processed Seurat object | `/media/ag-cherrmann/cramirez/multiome_ifn_project/data/seurat/ifn_treated_cells_rnaseq_processed_seurat.rds` | In-house, 900 cells, SCT assay. `orig.ident` encodes `<library>_<time>_<priming>_<stimulus>`: time 3h/16h after electroporation, priming `pIFN` = IFN-primed / `-IFN` = not primed, stimulus `dsRNA` / `polyC` (libraries `3_16h_-IFN_dsRNA`, `4_3h_pIFN_dsRNA`, `5_3h_pIFN_polyC`, `6_3h_-IFN_dsRNA`, `7_3h_-IFN_polyC`) |
+| MSigDB HALLMARK_TNFA_SIGNALING_VIA_NFKB | original: <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_TNFA_SIGNALING_VIA_NFKB&fileType=grp>; used here: <https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2026.1.Hs/h.all.v2026.1.Hs.symbols.gmt> | cached as `analysis/supplementary_figure_01/msigdb_v2026.1/HALLMARK_TNFA_SIGNALING_VIA_NFKB.txt` (identical in v2026.1 and v2026.2) |
+| MSigDB GOBP_RESPONSE_TO_VIRUS | original: <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=GOBP_RESPONSE_TO_VIRUS&fileType=grp>; used here: <https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2026.1.Hs/c5.go.bp.v2026.1.Hs.symbols.gmt> | cached as `analysis/supplementary_figure_01/msigdb_v2026.1/GOBP_RESPONSE_TO_VIRUS.txt`. **Version matters**: the live URL now serves MSigDB 2026.2 (October 2026, 377 genes); the original PDFs (September 2026) were made with 2026.1 (440 genes). With 2026.1 the original AUCs and DeLong p-values are reproduced exactly |
+| Enrichr libraries | <https://maayanlab.cloud/Enrichr/> (`WikiPathway_2023_Human`, `MSigDB_Hallmark_2020`, `KEGG_2026`, `GO_Biological_Process_2025`) | queried with the `enrichR` package; result cached (see below) |
+| Enrichr cache, general repositories | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/supplementary_figure_01/enrichr_rigi_general_repos.rds` | see the note in [Enrichment of the RIG-I-only signature] |
+
+Gene sets not needed for these panels (the Schoggins ISG list and
+GOBP_RIG_I_SIGNALING_PATHWAY, used only in a fgsea check of the original
+script) are not loaded.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(ggrepel)
+library(scales)
+library(patchwork)
+library(Seurat)
+library(pROC)
+library(enrichR)
+
+source('/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R')
+```
+
+
+## Initial settings
+
+
+```{r settings, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+dirs <- section_dirs("supplementary_figure_01")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+```
+
+
+# Loading the bulk RNA-Seq data
+
+## IFN treated samples
+
+Bulk RNA-Seq of A549 cells treated with IFN-β at different time points (VST
+values). The `dsRNA-16h` sample is removed, as in the original analysis.
+
+
+```{r loading_ifn_data, results="show"}
+ifn_df <- read_tsv(file.path(path2project,
+                             'analysis/01_QC_visualization/vst_interferon_RNASeq.tsv.gz'),
+                   show_col_types = FALSE) %>%
+                as.data.frame()
+colnames(ifn_df) <- gsub('raw_counts_', '', colnames(ifn_df))
+
+## Removing dsRNA 16 hours
+ifn_df <- ifn_df[, colnames(ifn_df) != 'dsRNA-16h']
+
+ifn_ensembl_ids <- ifn_df$ensemb_id
+ifn_mtx <- dplyr::select(ifn_df, -ensemb_id) %>%
+                as.matrix()
+rownames(ifn_mtx) <- ifn_ensembl_ids
+
+dim(ifn_mtx)
+colnames(ifn_mtx)
+```
+
+
+## dsRNA electroporated (EPO) samples
+
+Bulk RNA-Seq of A549 WT and RIG-I KO cells electroporated with dsRNA / polyC
+or mock (VST values). The `gene_name` / `ensembl_id` columns are used as gene
+annotation.
+
+
+```{r loading_epo_data}
+epo_gex <- readr::read_tsv(
+        "/media/ag-cherrmann/cramirez/rnaSeq_dsRNA/analysis/sept_2025/01_exploratory_data_analysis/vst_dsRNA_sept2025.tsv.gz",
+        show_col_types = FALSE) %>%
+              as.data.frame()
+
+colnames(epo_gex) <- gsub('raw_counts_|_featureCounts.tsv',
+                      '', colnames(epo_gex))
+
+gene_anns <- dplyr::select(epo_gex, gene_name, ensembl_id)
+
+rownames(epo_gex) <- epo_gex$ensembl_id
+colnames(epo_gex)
+```
+
+
+# WT projection onto the concatenated PCA
+
+**Panel `pca_concatenated_projection_wt.pdf`.** The concatenated PCA of the
+IFN and RIG-I KO samples is defined in Figure 1 (`figure_01.Rmd`) and loaded
+here. The VST values of the IFN, RIG-I KO and WT samples (restricted to the
+genes used in the PCA) are projected with `predict()`; the IFN and KO samples
+are drawn in grey and the WT samples in red.
+
+
+```{r loading_pca}
+pca_list <- readRDS(file.path(path2repo, 'analysis/figure_01/pca_concatenated.rds'))
+pca_concatenated <- pca_list$pca
+intersected_genes <- pca_list$intersected_genes
+pc1_var <- pca_list$pc1_var
+pc2_var <- pca_list$pc2_var
+
+length(intersected_genes)
+c(pc1_var, pc2_var)
+```
+
+
+```{r, extracting_wt}
+## RIG-I KO samples (as in the PCA of Figure 1)
+epo_mtx_subset <- epo_gex[, grepl('KO', colnames(epo_gex))]
+
+## IFN samples
+ifn_mtx_subset <- ifn_mtx
+
+## WT samples
+wt_gex <- epo_gex[,grepl('WT|gene_name|ensembl_id',
+                          colnames(epo_gex))]
+wt_mtx <- wt_gex
+rownames(wt_mtx) <- rownames(wt_gex)
+wt_mtx <- select(wt_mtx, -gene_name, -ensembl_id) %>%
+                as.matrix()
+
+concatenated_wt_mtx <- cbind(ifn_mtx_subset[intersected_genes,],
+                             epo_mtx_subset[intersected_genes,],
+                             wt_mtx[intersected_genes,])
+dim(concatenated_wt_mtx)
+
+projected_wt <- predict(object = pca_concatenated,
+                        newdata = t(concatenated_wt_mtx))
+projected_wt_df <- as.data.frame(projected_wt)
+rn <- rownames(projected_wt_df)
+projected_wt_df$batch <- ifelse(
+  grepl("^(control|IFN)", rn), "IFN",
+  ifelse(
+    grepl("^KO", rn), "KO",
+    ifelse(grepl("^WT", rn), "WT", NA)
+  )
+)
+projected_wt_df$treatment <- sub(".*(control|IFN).*", "\\1", rn)
+projected_wt_df$genotype  <- sub(".*(KO|WT).*", "\\1", rn)
+```
+
+
+```{r, projecting_WT, fig.width=6, fig.height=5}
+projected_wt_df$treatment <- gsub("_.*", "", projected_wt_df$treatment)
+projected_wt_df$time <- gsub(".*-", "", rownames(projected_wt_df))
+projected_wt_df$time <- gsub("h", "", projected_wt_df$time)
+projected_wt_df$"sample" <- rownames(projected_wt_df)
+projected_wt_df <- mutate(projected_wt_df,
+                          condition = dplyr::case_when(
+                        stringr::str_detect(sample, "control") ~ "control",
+                        stringr::str_detect(sample, "IFN")     ~ "IFN",
+                        stringr::str_detect(sample, "polyC")   ~ "polyC",
+                        stringr::str_detect(sample, "dsRNA")   ~ "dsRNA",
+                        TRUE ~ NA_character_
+    ))
+
+projection_wt <- projected_wt_df %>%
+  ggplot(aes(
+    PC1, PC2,
+    colour = batch,
+    shape = condition,
+    label  = time
+  )) +
+  geom_point(size=4) +
+  geom_text_repel(size = 6) +
+
+  ## custom colors
+  scale_colour_manual(
+    values = c(WT = "red", KO = "gray80", IFN = "gray80")
+  ) +
+
+  ## exactly three breaks on each axis
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+
+  ## axis labels with explained variance
+  labs(
+    x = paste0("PC1 (", pc1_var, "% variance)"),
+    y = paste0("PC2 (", pc2_var, "% variance)")
+  ) +
+
+  ## bigger axis text
+  theme_classic() +
+  theme(
+    axis.text  = element_text(size = 16),
+    axis.title = element_text(size = 18)
+  )
+
+
+pdf(file.path(path2figures, 'pca_concatenated_projection_wt.pdf'),
+    width=6, height=5)
+projection_wt
+dev.off()
+
+projection_wt
+```
+
+
+# RIG-I-only signature with IFN genes
+
+The single-cell panels were produced by `01_rigi_vs_stat_signatures.Rmd`,
+which defines its own RIG-I-only signature (see
+[Which RIG-I-only signature is used in each panel]). We re-compute it here:
+genes dynamic in the IFN time course (`ifn_set`) or in the RIG-I KO dsRNA time
+course (`ko_set`) are loaded, the shared genes removed, and a PCA of the IFN
+samples plus **all** dsRNA time-course samples (WT and KO) is computed. The
+RIG-I-only signature is the top-100 genes (gene symbols) of the PC1 loadings.
+
+
+```{r loading_gene_sets}
+ifn_set <- readRDS('/media/ag-cherrmann/cramirez/interferon_model/data/aleksandr_genes/IFNb_Response_Omnibus_Strict_FCcorresp.rds')
+length(ifn_set)
+
+dsRNA_set <- readRDS('/media/ag-cherrmann/cramirez/interferon_model/data/aleksandr_genes/wt_ko_splines_gene_sets.rds')
+ko_set <- dsRNA_set$ko
+length(ko_set)
+
+# Genes only in IFN set
+ifn_only <- setdiff(ifn_set, ko_set)
+
+# Genes only in KO (RIG-I KO) set
+rigi_only <- setdiff(ko_set, ifn_set)
+```
+
+
+```{r pca_all_samples}
+## no shared genes
+concatenated_genes <- unique(c(ifn_only, rigi_only))
+selected_genes <- concatenated_genes
+
+## preparing epo mtx (all WT and KO samples)
+epo_all_mtx_subset <- dplyr::select(epo_gex, -gene_name, -ensembl_id)
+epo_all_mtx_subset <- epo_all_mtx_subset[selected_genes, ]
+
+## preparing ifn mtx
+ifn_all_mtx_subset <- ifn_mtx[selected_genes, ]
+
+## getting intersection
+intersected_genes_all <- intersect(rownames(ifn_all_mtx_subset),
+                                   rownames(epo_all_mtx_subset))
+
+concatenated_mtx <- cbind(ifn_all_mtx_subset[intersected_genes_all,],
+                          epo_all_mtx_subset[intersected_genes_all,])
+
+pca_all <- prcomp(t(concatenated_mtx),
+                  center = TRUE,
+                  scale. = FALSE,
+                  retx = TRUE,
+                  rank. = 10)
+```
+
+
+Genes are ranked by their PC1 / PC2 loadings after converting Ensembl IDs to
+gene symbols.
+
+
+```{r ranking_loadings}
+pc1 <- pca_all$rotation %>%
+        as.data.frame() %>%
+               dplyr::arrange(desc(PC1)) %>%
+                select(PC1)
+
+pc2 <- pca_all$rotation %>%
+        as.data.frame() %>%
+               dplyr::arrange(desc(PC2)) %>%
+                select(PC2)
+
+pc_signatures <- list(pc1=pc1,
+                      pc2=pc2)
+
+## ensemblid to gene symbol
+pc_signatures_gs <- lapply(pc_signatures,
+                           function(genes_df){
+                                   gene_names <- plyr::mapvalues(
+                                           x = rownames(genes_df),
+                                           from = gene_anns$ensembl_id,
+                                           to = gene_anns$gene_name,
+                                           warn_missing = FALSE
+                                   )
+                                   genes_df$'gene_symbol' <- gene_names
+                                   genes_df$'ensembl_id' <- rownames(genes_df)
+                                   genes_df <- genes_df[!duplicated(genes_df$gene_symbol),]
+                                   rownames(genes_df) <- genes_df$gene_symbol
+                                   genes_df
+                           })
+
+pc_ranks <- lapply(pc_signatures_gs, function(df) {
+  v <- df[[1]]
+  names(v) <- rownames(df)
+  sort(v, decreasing = TRUE)
+})
+
+rigi_only <- pc_ranks$pc1 %>%
+                   head(100) %>%
+                   names
+
+stat_only <- pc_ranks$pc2 %>%
+                   tail(100) %>%
+                   names
+
+saveRDS(list(stat_only=stat_only,
+             rigi_only=rigi_only),
+        file = file.path(path2analysis, "rigi_vs_stat_signatures_all_samples_with_IFNs.rds"))
+
+signatures_gene_symbol <- list(rigi_only=rigi_only,
+                               stat_only=stat_only)
+rigi_only
+```
+
+
+Check: the re-computed signature is identical to the one saved by the
+original script when the PDFs were produced, and comparison with the final
+RIG-I-only signature (`path2signs`).
+
+
+```{r checking_signature}
+original_signs <- readRDS('/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_August/rigi_vs_stat_signatures.rds')
+identical(original_signs$rigi_only, rigi_only)
+identical(original_signs$stat_only, stat_only)
+
+final_signs <- readRDS(path2signs)
+lengths(final_signs)
+length(intersect(rigi_only, final_signs$rigi_only))
+setdiff(rigi_only, final_signs$rigi_only)
+setdiff(final_signs$rigi_only, rigi_only)
+```
+
+
+# Scoring the A549 scRNA-Seq data
+
+In-house scRNA-Seq of A549 cells electroporated with dsRNA or polyC (3 h and
+16 h), with or without IFN priming. Cells are scored with Seurat
+`AddModuleScore` for the RIG-I-only / STAT-only signatures (above), the MSigDB
+HALLMARK_TNFA_SIGNALING_VIA_NFKB (NF-κB) gene set and the
+GOBP_RESPONSE_TO_VIRUS (viral GO) gene set.
+
+
+```{r loading_scrnaseq}
+a549_cells <- readRDS("/media/ag-cherrmann/cramirez/multiome_ifn_project/data/seurat/ifn_treated_cells_rnaseq_processed_seurat.rds")
+a549_cells
+table(a549_cells$orig.ident)
+
+a549_cells <- AddModuleScore(a549_cells,
+                           features = signatures_gene_symbol,
+                           name = names(signatures_gene_symbol))
+```
+
+
+## MSigDB gene sets
+
+The original script read the gene sets live from the MSigDB website
+(`readLines(url)`). The GOBP_RESPONSE_TO_VIRUS set changed in the MSigDB
+2026.2 release (October 2026), after the PDFs were produced (September 2026,
+release 2026.1). To reproduce the panels we use the gene sets of the
+versioned MSigDB 2026.1 release; they were downloaded once with the chunk
+below (not evaluated) and cached in `analysis/supplementary_figure_01/msigdb_v2026.1/`.
+With the 2026.1 sets the AUCs and DeLong p-values of the original PDFs are
+reproduced exactly; with the current live set the viral GO AUCs change
+slightly (e.g. 0.751 instead of 0.74 in the 3 h vs 16 h test).
+
+
+```{r download_msigdb, eval=FALSE}
+## Original code (live, unversioned):
+## nfkb_url <- "https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_TNFA_SIGNALING_VIA_NFKB&fileType=grp"
+## nfkb_sign <- readLines(nfkb_url); nfkb_sign <- nfkb_sign[2:length(nfkb_sign)]
+## url_virus_go <- 'https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=GOBP_RESPONSE_TO_VIRUS&fileType=grp'
+## viral_go <- readLines(url_virus_go); viral_go <- viral_go[3:length(viral_go)]
+
+msigdb_release <- "https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2026.1.Hs/"
+path2msigdb <- file.path(path2analysis, "msigdb_v2026.1")
+dir.create(path2msigdb, showWarnings = FALSE)
+
+extract_gene_set <- function(gmt_file, set_name){
+        gmt_url <- paste0(msigdb_release, gmt_file)
+        tmp <- tempfile(fileext = ".gmt")
+        download.file(gmt_url, tmp, quiet = TRUE)
+        gmt <- strsplit(readLines(tmp), "\t")
+        names(gmt) <- sapply(gmt, `[`, 1)
+        genes <- gmt[[set_name]][-(1:2)]   # drop name and URL
+        writeLines(genes, file.path(path2msigdb, paste0(set_name, ".txt")))
+        unlink(tmp)
+        genes
+}
+
+extract_gene_set("h.all.v2026.1.Hs.symbols.gmt", "HALLMARK_TNFA_SIGNALING_VIA_NFKB")
+extract_gene_set("c5.go.bp.v2026.1.Hs.symbols.gmt", "GOBP_RESPONSE_TO_VIRUS")
+```
+
+
+```{r loading_msigdb}
+path2msigdb <- file.path(path2analysis, "msigdb_v2026.1")
+
+## NF-kB
+nfkb_sign <- readLines(file.path(path2msigdb, "HALLMARK_TNFA_SIGNALING_VIA_NFKB.txt"))
+length(nfkb_sign)
+nfkb_list <- list("nfkb"=nfkb_sign)
+
+a549_cells <- AddModuleScore(a549_cells,
+                           features = nfkb_list,
+                           name = "NFKB_signature")
+
+## Viral response
+viral_go <- readLines(file.path(path2msigdb, "GOBP_RESPONSE_TO_VIRUS.txt"))
+length(viral_go)
+viral_go_list <- list(viral_go)
+
+a549_cells <- AddModuleScore(a549_cells,
+                           features = viral_go_list,
+                           name = "viral_go")
+```
+
+
+## Heatmap of the RIG-I-only genes
+
+**Panel `heatmap_rigi_only_signature_with_IFNs.pdf`.** Scaled expression of
+the RIG-I-only genes of the all-samples signature (which includes the IFN
+genes) in every cell, grouped by sample.
+
+
+```{r heatmap_rigi_only, fig.width=6, fig.height=12}
+pdf(file.path(path2figures, "heatmap_rigi_only_signature_with_IFNs.pdf"),
+    width = 6, height = 12)
+DoHeatmap(a549_cells,
+          group.by = "orig.ident",
+          features = rigi_only,
+          label = FALSE,
+          raster = FALSE)
+dev.off()
+
+DoHeatmap(a549_cells,
+          group.by = "orig.ident",
+          features = rigi_only,
+          label = FALSE)
+```
+
+
+## RIG-I-only vs NF-κB and viral GO scores
+
+**Panel `rigi_vs_nfkb_virusgo.pdf`.** Per-cell RIG-I-only score versus the
+NF-κB (top) and viral GO (bottom) scores, coloured by treatment; the Pearson
+correlation is shown on top of each plot.
+
+
+*Note:* the current original script writes this PDF with `width=4.0`, but
+the panel PDF (`figures/2026_August/rigi_vs_nfkb_virusgo.pdf`, 2026-09-24
+16:31) is 4.5 x 6 in (the script was edited to 4.0 four minutes later). We
+keep the 4.5 in width of the panel used in the figure.
+
+
+```{r scatter_rigi_nfkb_virusgo, fig.width=4.5, fig.height=6}
+p1 <- FeatureScatter(a549_cells,
+               feature1 = "rigi_only1",
+               feature2 = "NFKB_signature1",
+               group.by = "treatment") +
+                geom_abline(slope = 1) +
+                geom_hline(yintercept = 0,
+                           linetype = "dashed") +
+                geom_vline(xintercept = 0,
+                           linetype = "dashed") +
+                NoLegend()
+
+p2 <- FeatureScatter(a549_cells,
+               feature1 = "rigi_only1",
+               feature2 = "viral_go1",
+               group.by = "treatment") +
+                geom_abline(slope = 1) +
+                geom_hline(yintercept = 0,
+                           linetype = "dashed") +
+                geom_vline(xintercept = 0,
+                           linetype = "dashed") +
+                NoLegend()
+
+pdf(file.path(path2figures, "rigi_vs_nfkb_virusgo.pdf"),
+    width=4.5, height=6)
+p1 / p2
+dev.off()
+
+p1 / p2
+```
+
+
+## ROC curves: dsRNA 3 h vs dsRNA 16 h
+
+**Panel `roc_curves_rigi_vs_nfkb_viral_go_test.pdf`.** Using the non-primed
+dsRNA cells, the scores are used as classifiers of early (3 h, "case") vs
+late (16 h, "control") cells. AUCs of the RIG-I-only, NF-κB and viral GO
+scores are compared to the RIG-I-only AUC with DeLong tests.
+
+
+```{r roc_3h_vs_16h, fig.width=6, fig.height=4.0}
+a549_cells_subset <- subset(a549_cells,
+                            orig.ident %in%
+                                    c("6_3h_-IFN_dsRNA",
+                                "3_16h_-IFN_dsRNA"))
+
+# Define case and control groups
+a549_cells_subset$case_vs_control <- ifelse(
+  grepl("6_3h_-IFN_dsRNA", a549_cells_subset$orig.ident),
+  "case",
+  "control"
+)
+
+# Calculate ROC curves
+roc_rigi <- roc(
+  response = a549_cells_subset$case_vs_control,
+  predictor = a549_cells_subset$rigi_only1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+roc_nfkb <- roc(
+  response = a549_cells_subset$case_vs_control,
+  predictor = a549_cells_subset$NFKB_signature1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+roc_viral_go <- roc(
+  response = a549_cells_subset$case_vs_control,
+  predictor = a549_cells_subset$viral_go1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+# DeLong test 1: NF-kB vs RIG-I-only
+auc_test_nfkb <- roc.test(
+  roc_rigi,
+  roc_nfkb,
+  method = "delong"
+)
+
+# DeLong test 2: Viral GO signature vs RIG-I-only
+auc_test_viral_go <- roc.test(
+  roc_rigi,
+  roc_viral_go,
+  method = "delong"
+)
+
+## Plotting function: identical code to the original chunk
+plot_roc_comparison <- function(){
+        # Plot all three ROC curves
+        pROC::plot.roc(
+          roc_rigi,
+          legacy.axes = TRUE,
+          lwd = 3,
+          main = "ROC curve comparison",
+          col = "black"
+        )
+
+        pROC::plot.roc(
+          roc_nfkb,
+          add = TRUE,
+          lwd = 3,
+          lty = 2,
+          col = "blue"
+        )
+
+        pROC::plot.roc(
+          roc_viral_go,
+          add = TRUE,
+          lwd = 3,
+          lty = 3,
+          col = "red"
+        )
+
+        # Add legend with AUCs and DeLong tests
+        legend(
+          "bottomright",
+          legend = c(
+            paste0(
+              "RIG-I-only: AUC = ",
+              round(auc(roc_rigi), 3)
+            ),
+            paste0(
+              "NF-kB: AUC = ",
+              round(auc(roc_nfkb), 3)
+            ),
+            paste0(
+              "Viral GO: AUC = ",
+              round(auc(roc_viral_go), 3)
+            ),
+            paste0(
+              "DeLong NF-kB vs RIG-I: p = ",
+              signif(auc_test_nfkb$p.value, 3)
+            ),
+            paste0(
+              "DeLong Viral GO vs RIG-I: p = ",
+              signif(auc_test_viral_go$p.value, 3)
+            )
+          ),
+          lwd = c(3, 3, 3, NA, NA),
+          lty = c(1, 2, 3, NA, NA),
+          col = c("black", "blue", "red", "black", "black"),
+          bty = "n"
+        )
+}
+
+pdf(file.path(path2figures, "roc_curves_rigi_vs_nfkb_viral_go_test.pdf"),
+    width=6, height=4.0)
+plot_roc_comparison()
+dev.off()
+
+plot_roc_comparison()
+```
+
+
+## ROC curves: dsRNA vs polyC
+
+**Panel `roc_curves_rigi_vs_nfkb.pdf`.** Same comparison, but classifying all
+dsRNA-electroporated cells ("case": `3_16h_-IFN_dsRNA`, `4_3h_pIFN_dsRNA`,
+`6_3h_-IFN_dsRNA`) vs all polyC-electroporated cells ("control":
+`5_3h_pIFN_polyC`, `7_3h_-IFN_polyC`).
+
+*Note:* this PDF (2026-09-16) was written by an earlier version of
+`01_rigi_vs_stat_signatures.Rmd`; in the current version of that script the
+chunk writing `roc_curves_rigi_vs_nfkb.pdf` is `eval=FALSE` and plots only two
+curves, whereas the original PDF has three curves (RIG-I-only, NF-κB, viral
+GO) with the same layout as the 3 h vs 16 h panel. The case/control
+definition is not stored in the current script; we identified it by testing
+all sample groupings: dsRNA vs polyC (all cells) reproduces the AUCs (0.98,
+0.955, 0.955) and DeLong p-values (1.66e-06, 0.00571) of the original PDF
+exactly.
+
+
+```{r roc_dsrna_vs_polyc, fig.width=6, fig.height=4.0}
+a549_cells$case_vs_control <- ifelse(
+  grepl("dsRNA", a549_cells$orig.ident),
+  "case",
+  "control"
+)
+table(a549_cells$orig.ident, a549_cells$case_vs_control)
+
+# Calculate ROC curves
+roc_rigi <- roc(
+  response = a549_cells$case_vs_control,
+  predictor = a549_cells$rigi_only1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+roc_nfkb <- roc(
+  response = a549_cells$case_vs_control,
+  predictor = a549_cells$NFKB_signature1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+roc_viral_go <- roc(
+  response = a549_cells$case_vs_control,
+  predictor = a549_cells$viral_go1,
+  levels = c("control", "case"),
+  direction = "<"
+)
+
+auc_test_nfkb <- roc.test(roc_rigi, roc_nfkb, method = "delong")
+auc_test_viral_go <- roc.test(roc_rigi, roc_viral_go, method = "delong")
+
+pdf(file.path(path2figures, "roc_curves_rigi_vs_nfkb.pdf"),
+    width=6, height=4.0)
+plot_roc_comparison()
+dev.off()
+
+plot_roc_comparison()
+```
+
+
+# Enrichment of the RIG-I-only signature
+
+**Panel `scatterplot_rigi_gsea_general.pdf`.** Over-representation analysis
+(Enrichr) of the **final** RIG-I-only signature (`path2signs`, IFNB/IFNL genes
+removed as in the original; the final signature contains none) against
+general pathway repositories. Each dot is a term: x = -log10(adjusted
+p-value), y = fraction of the term genes present in the signature; terms with
+-log10(FDR) > 8.5 are labelled.
+
+
+```{r loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             genes[!grepl('IFNB|IFNL', genes)]
+})
+signatures <- signatures[c(2,1)]
+str(signatures)
+```
+
+
+*Note on the cache.* The original script
+(`01_rev_00_signature_similarity.Rmd`) wrote the Enrichr results of the
+tissue repositories **and** of the general repositories to the same file,
+`/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_August/enrichr_rigi_tissues_repos.rds`;
+that file currently holds the tissue results (Azimuth_2023, Jensen_TISSUES,
+PanglaoDB_Augmented_2021, TISSUES_Curated_2025,
+Tissue_Protein_Expression_from_ProteomicsDB), so the general results used for
+the original PDF were not preserved (the cancer-repository results are in
+`.../2026_August/enrichr_rigi_cancer_repos.rds`, not used here). We therefore
+re-queried Enrichr once (2026-10-27) with the chunk below (not evaluated) and
+cached the result in
+`analysis/supplementary_figure_01/enrichr_rigi_general_repos.rds`. The
+re-query reproduces the original panel (e.g. MSigDB Hallmark "TNF-alpha
+Signaling via NF-kB", 30/200 genes).
+
+
+```{r enrichr_general_query, eval=FALSE}
+setEnrichrSite("Enrichr")
+
+general_repos <- c("WikiPathway_2023_Human",
+                  "MSigDB_Hallmark_2020",
+                  "KEGG_2026",
+                  "GO_Biological_Process_2025")
+
+enrich_general_results <- enrichr(
+            genes = signatures$rigi_only,
+            databases = general_repos
+        )
+
+saveRDS(enrich_general_results,
+        file.path(path2analysis, "enrichr_rigi_general_repos.rds"),
+        compress = TRUE)
+```
+
+
+```{r scatterplot_enrichr_general, fig.width=8, fig.height=6}
+enrich_general_results <- readRDS(file.path(path2analysis, "enrichr_rigi_general_repos.rds"))
+
+all_general_results <- bind_rows(
+    lapply(names(enrich_general_results), function(db) {
+
+        res <- enrich_general_results[[db]]
+
+        if (is.null(res))
+            return(NULL)
+
+        res %>%
+            mutate(Database = db)
+    })
+)
+
+all_general_results <- all_general_results %>%
+  tidyr::separate(Overlap,
+           into = c("Overlap_n", "Overlap_total"),
+           sep = "/",
+           convert = TRUE) %>%
+  mutate(
+    Overlap_fraction = Overlap_n / Overlap_total
+  )
+
+
+scatterplot_gsea_general <- all_general_results %>%
+    mutate(
+        logFDR = -log10(`Adjusted.P.value`),
+        label = ifelse(logFDR > 8.5, Term, NA)
+    ) %>%
+    ggplot(aes(x = logFDR,
+               y = Overlap_fraction,
+               colour = Database)) +
+    geom_point() +
+    geom_text_repel(
+        aes(label = label),
+        force = 0.5,
+        max.overlaps = Inf
+    ) +
+    theme_classic() +
+    theme(axis.text = element_text(size = 20),
+          axis.title = element_text(size = 24)) +
+        labs(x="-log10(Adjusted.P.value)",
+             y="Overlap fraction",
+             title = "General datasets")
+
+
+pdf(file.path(path2figures, "scatterplot_rigi_gsea_general.pdf"),
+    width=8, height=6)
+scatterplot_gsea_general
+dev.off()
+
+scatterplot_gsea_general
+```
+
+
+```{r, session_info}
+sessionInfo()
+```

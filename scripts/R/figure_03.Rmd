@@ -1,0 +1,813 @@
+---
+title: "Figure 3: RIG-I-only vs STAT-only signatures in nasal swabs of SARS-CoV-2 patients (scRNA-Seq)"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This markdown reproduces the panels of **Figure 3**. We project the
+RIG-I-only and STAT-only (IFN-only) signatures, derived from the A549
+bulk model in Figure 1, onto the single-cell RNA-Seq data of nasal
+swabs from SARS-CoV-2 positive and negative children and adults
+published by
+[Loske et al. 2021, Nat. Biotechnol.](https://www.nature.com/articles/s41587-021-01037-9).
+Every cell is scored with both signatures (Seurat `AddModuleScore`), and
+cells are classified into two quadrants of the RIG-I-only vs STAT-only
+score plane using thresholds derived from SARS-CoV-2 negative donors
+(99.959 % quantile of the RIG-I-only score and 99.99 % quantile of the
+STAT-only score of all cells of SARS-CoV-2 negative donors):
+
+* **Quadrant I**: RIG-I-only score above threshold and STAT-only score
+  below threshold (cells with direct RIG-I activity but no IFN-receptor
+  signalling).
+* **Quadrant II**: STAT-only score above threshold and RIG-I-only score
+  below threshold (bystander cells responding to secreted IFN).
+
+Panels produced (all saved in `figures/figure_03/`):
+
+| Panel file | Content |
+|---|---|
+| `gathering_loske_dataset.pdf` | RIG-I-only vs STAT-only scores of all cells, split by SARS-CoV-2 status and coloured by quadrant |
+| `barplots_cell_types_qII.pdf` | Cell-type composition of quadrant I, quadrant II and all cells of SARS-CoV-2 positive donors, with the Fisher-test (BH-adjusted) p-value for enrichment of each cell type in quadrant I |
+| `scatterplot_rig_vs_stat_selected_cell_types.pdf` | RIG-I-only vs STAT-only scores of cells carrying SARS-CoV-2 transcripts in selected cell types, coloured by viral load |
+| `neutrophils_features_scov2pos.pdf` | RIG-I-only vs STAT-only scores of neutrophils carrying SARS-CoV-2 transcripts coloured by viral load, age group and IFNL1 expression |
+
+The code was taken from the original analysis script
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/03_scRNASeq_projections_loske.Rmd`
+(which wrote these panels to `figures/2026_May/` on 2026-10-01), except
+for the cell-type barplot (`barplots_cell_types_qII.pdf`), which was produced
+on 2026-05-18 by an earlier version of
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/may_2026/03_scRNASeq_projections_loske.Rmd`
+(see the section *Cell-type composition of the quadrants* for details).
+Only the code needed for these panels was kept; plotting code, PDF sizes
+and aesthetics are unchanged.
+
+The neutrophil subset defined at the end of this markdown (SARS-CoV-2
+transcript-positive neutrophils used for the children vs adults
+comparison) is saved to `analysis/figure_03/` and is the input of
+`supplementary_figure_03.Rmd` (volcano plot and GSEA), so **this markdown
+has to be run before `supplementary_figure_03.Rmd`**.
+
+
+# Input data
+
+| Input | Absolute path / source |
+|---|---|
+| Processed Seurat object of the nasal-swab scRNA-Seq data (raw counts, normalised data, UMAP and cell annotation as published by the authors; file `210716_figshare_upload_ag_lehmann.rds` downloaded from the figshare repository of Loske et al. 2021 (see the Data availability section of the [paper](https://www.nature.com/articles/s41587-021-01037-9))). Viral transcripts are included as features `SARS-CoV-2-p` (positive strand) and `SARS-CoV-2-m` (minus strand) | `/media/bq-storage/ag-cherrmann/cramirez/data/loske_2021/210716_figshare_upload_ag_lehmann.rds` |
+| Cell metadata used (columns of the Seurat object above, as provided by Loske et al.) | `detailed_clusters` (cell type), `covid` (SARS-CoV-2 status of the donor: `pos` / `neg`), `covid_kid1` (status x age group: `pos_adult`, `pos_children`, `neg_adult`, `neg_children`), `dps` (days post symptom onset) |
+| Viral load per cell | `SARS-CoV-2-p` expression (normalised data of the Seurat object above) |
+| RIG-I-only / STAT-only signatures (written by `figure_01.Rmd`) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/rigi_vs_stat_only_signatures.rds` (`path2signs` in `settings.R`) |
+| Shared settings (paths, colours) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R` |
+
+No MSigDB gene sets are used for the panels of this figure.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(gridExtra)
+library(RColorBrewer)
+library(colorspace)
+
+source("/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R")
+```
+
+
+## Initial settings
+
+Output folders of this section (`figures/figure_03/` and
+`analysis/figure_03/` in the repository).
+
+```{r setting_up}
+dirs <- section_dirs("figure_03")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+```
+
+
+## Loading the data from Loske et al. 2021
+
+Processed Seurat object as published by the authors on figshare. The
+object already contains normalised data and the cell annotation, so no
+further processing is needed.
+
+```{r loading_loske}
+path2loske <- '/media/bq-storage/ag-cherrmann/cramirez/data/loske_2021/210716_figshare_upload_ag_lehmann.rds'
+seurat <- readRDS(path2loske)
+seurat
+```
+
+Overview of the metadata columns used in this figure and confirmation that
+the viral transcripts are features of the object.
+
+```{r metadata_overview}
+table(seurat$covid, useNA = 'ifany')
+table(seurat$covid_kid1, useNA = 'ifany')
+table(seurat$dps, useNA = 'ifany')
+table(seurat$detailed_clusters, useNA = 'ifany')
+c('SARS-CoV-2-p', 'SARS-CoV-2-m') %in% rownames(seurat)
+```
+
+
+## Loading signatures
+
+RIG-I-only and STAT-only signatures defined in Figure 1. As in the original
+analysis, interferon genes (IFNB / IFNL) are removed from the signatures
+before scoring, and the list is reordered as (`stat_only`, `rigi_only`), so
+that `AddModuleScore` names the scores `stat_only1` and `rigi_only2`.
+
+```{r loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             genes[!grepl('IFNB|IFNL', genes)]
+})
+signatures <- signatures[c(2,1)]
+str(signatures)
+```
+
+
+## Scoring cells
+
+Module scores of both signatures for every cell (`AddModuleScore` uses a
+fixed seed by default, so scores are reproducible).
+
+```{r scoring_cells}
+seurat <- AddModuleScore(seurat,
+                         features = signatures,
+                         name = names(signatures))
+
+seurat@meta.data %>% colnames
+```
+
+
+## Selected cell types (panel `scatterplot_rig_vs_stat_selected_cell_types.pdf`)
+
+RIG-I-only vs STAT-only scores of cells with SARS-CoV-2 (+) strand
+transcripts (`SARS-CoV-2-p > 0`) in nine selected cell types, coloured by
+the viral load. Donors at 10-12 days post symptoms are excluded.
+
+```{r selected_cell_types, fig.width=8, fig.height=7}
+df_signatures <- FetchData(seurat, c('stat_only1',
+                                     'rigi_only2',
+                                     'covid',
+                                     'dps',
+                                     'detailed_clusters',
+                                     'SARS-CoV-2-p',
+                                     'SARS-CoV-2-m')) %>%
+        dplyr::filter(!dps %in% c('10', '11', '12')) %>%
+        dplyr::mutate(dps = factor(dps, sort(unique(dps))))
+
+
+selected_cells <- c("nrMa",
+                "Neutrophil",
+                "moMa",
+                "Squamous",
+                "Epi_lowRNA",
+                "CD11c_mDC",
+                "NK",
+                "Cil_acute_phase",
+                "pDC")
+p_all <- df_signatures %>%
+        dplyr::filter(`SARS-CoV-2-p` > 0) %>%
+        arrange(`SARS-CoV-2-p`) %>%
+        filter(detailed_clusters %in% selected_cells) %>%
+        mutate(detailed_clusters = factor(detailed_clusters,
+                                          levels = selected_cells)) %>%
+ggplot(aes(x = rigi_only2,
+                          y = stat_only1,
+                          colour = `SARS-CoV-2-p`)) +
+  geom_point(alpha = 0.5, size = 1) +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') +
+  geom_hline(yintercept = 0.0, linetype = 'dashed') +
+  facet_wrap(  ~ detailed_clusters) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    strip.text = element_text(size = 12),
+    strip.background = element_blank()
+  ) +
+  labs(
+    x = "RIGI-only Score",
+    y = "STAT-only Score",
+    title = ""
+  ) + viridis::scale_color_viridis()
+
+
+p_all
+pdf(paste0(path2figures,
+           "/scatterplot_rig_vs_stat_selected_cell_types.pdf"),
+    width=8, height=7)
+p_all
+dev.off()
+```
+
+
+## Virtual gathering (panel `gathering_loske_dataset.pdf`)
+
+Quadrant thresholds are computed from cells of SARS-CoV-2 negative donors
+(99.99 % quantile of `stat_only1`, 99.959 % quantile of `rigi_only2`).
+Quadrant I: `stat_only1 <= stat_th & rigi_only2 >= rigi_th`; quadrant II:
+`stat_only1 >= stat_th & rigi_only2 <= rigi_th`; all other cells are `NA`
+(grey). All cells are plotted, split by SARS-CoV-2 status of the donor.
+
+```{r virtual_gathering, fig.width=5, fig.height=2.75}
+md <- FetchData(seurat,
+                vars = c(colnames(seurat@meta.data),
+                         'SARS-CoV-2-p'))
+
+cols <- brewer.pal(4, "Set2")[2:4]
+names(cols) <- c("I", "II")
+
+stat_th <- quantile(subset(md, covid == 'neg')$stat_only1, 0.9999)
+stat_th
+rigi_th <- quantile(subset(md, covid == 'neg')$rigi_only2, 0.99959)
+rigi_th
+
+md <-  md %>%
+  mutate(
+    quadrant = case_when(
+      stat_only1 <= stat_th & rigi_only2 >= rigi_th ~ "I",
+      stat_only1 >= stat_th & rigi_only2 <= rigi_th   ~ "II",
+      FALSE ~ "III"
+    )
+  )
+gathering_loske <- md %>%  ggplot(aes(x = rigi_only2, y = stat_only1, color = quadrant)) +
+  geom_point(alpha = 0.6, size = 1, shape = 3) +
+  geom_hline(yintercept = stat_th, linetype = 'dashed') +
+  geom_vline(xintercept = rigi_th, linetype = 'dashed') +
+  theme_bw() +
+        facet_wrap(~covid) +
+        scale_colour_manual(values = cols) +
+  labs(
+    x = "rigi_only2",
+    y = "stat_only1",
+    color = "Quadrant"
+  ) +
+        scale_x_continuous(breaks = c(0, 0.5, 1.0))
+
+gathering_loske
+
+pdf(paste0(path2figures,
+           '/gathering_loske_dataset.pdf'),
+    width=5, height=2.75)
+gathering_loske
+dev.off()
+```
+
+
+Number of cells per quadrant and SARS-CoV-2 status.
+
+```{r quadrant_counts}
+table(md$covid, md$quadrant, useNA = 'ifany')
+```
+
+
+## Cell-type composition of the quadrants (panel `barplots_cell_types_qII.pdf`)
+
+**Provenance of this panel.** The figure panel
+`/media/ag-cherrmann/cramirez/interferon_model/figures/2026_May/barplots_cell_types_qII.pdf`
+(2026-05-18) was produced by an earlier version of
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/may_2026/03_scRNASeq_projections_loske.Rmd`.
+The current version of that script contains the same plotting code but
+labels the "Total" column with a string pasting the quadrant I and quadrant
+II FDRs from a separate test (`results_joined`, computed in a later chunk)
+and saves the plot as `barplots_cell_types_fdr.pdf` (2026-06-24). Comparing
+both PDFs, the bars and percentages are identical, but the qII panel shows
+labels of the form `adj.p = 4e-54`, i.e. the `p_label` column built in this
+very chunk from the BH-adjusted Fisher-test p-value of enrichment of each
+cell type in quadrant I (`padj_I`). Therefore, the code below is the
+current `may_2026` code with the label of the p-value text layer set to
+`p_label` (data `plot_df`) instead of the FDR string of `plot_df_fdr`;
+everything else (bars, colours, sizes, the 7 x 3 inch PDF) is unchanged.
+The output is saved under the name of the figure panel,
+`barplots_cell_types_qII.pdf`.
+
+Proportions are computed among cells of SARS-CoV-2 positive donors for
+all cells ("Total"), quadrant I and quadrant II, keeping the cell types
+present in quadrant I. For each cell type, a Fisher's exact test compares
+the cell type vs all other cells in quadrant I vs outside quadrant I,
+and p-values are BH-adjusted.
+
+```{r barplots_cell_types, fig.width=7, fig.height=3}
+# =========================================================
+# 1. Compute proportions
+# =========================================================
+
+## Preparing the data
+# keep only relevant columns
+df <- md %>%
+  filter(covid == "pos") %>%
+  select(detailed_clusters, quadrant)
+
+# total number of cells
+n_total <- nrow(df)
+
+prop_total <- df %>%
+  count(detailed_clusters) %>%
+  mutate(
+    group = "Total",
+    proportion = n / sum(n)
+  )
+
+prop_I <- df %>%
+  filter(quadrant == "I") %>%
+  count(detailed_clusters) %>%
+  mutate(
+    group = "I",
+    proportion = n / sum(n)
+  )
+
+prop_II <- df %>%
+  filter(quadrant == "II") %>%
+  count(detailed_clusters) %>%
+  mutate(
+    group = "II",
+    proportion = n / sum(n)
+  )
+
+props <- bind_rows(
+  prop_total,
+  prop_I,
+  prop_II
+)
+
+# =========================================================
+# 2. Keep only clusters present in quadrant I
+# =========================================================
+
+
+clusters_keep <- prop_I %>%
+  filter(proportion > 0) %>%
+  pull(detailed_clusters)
+
+props <- props %>%
+  filter(detailed_clusters %in% clusters_keep)
+
+# =========================================================
+# 3. Fisher enrichment tests
+# =========================================================
+
+df_test <- df
+
+clusters <- unique(props$detailed_clusters)
+
+enrichment_results <- lapply(clusters, function(cl){
+
+  # -------------------------------------------------------
+  # Fisher test for Quadrant I enrichment
+  # -------------------------------------------------------
+
+  tab_I <- matrix(c(
+
+    # cluster in I
+    sum(
+      df_test$detailed_clusters == cl &
+        df_test$quadrant == "I",
+      na.rm = TRUE
+    ),
+
+    # other clusters in I
+    sum(
+      df_test$detailed_clusters != cl &
+        df_test$quadrant == "I",
+      na.rm = TRUE
+    ),
+
+    # cluster not in I
+    sum(
+      df_test$detailed_clusters == cl &
+        df_test$quadrant != "I",
+      na.rm = TRUE
+    ),
+
+    # other clusters not in I
+    sum(
+      df_test$detailed_clusters != cl &
+        df_test$quadrant != "I",
+      na.rm = TRUE
+    )
+
+  ),
+  nrow = 2,
+  byrow = TRUE)
+
+  test_I <- fisher.test(tab_I)
+
+  data.frame(
+    detailed_clusters = cl,
+    p_I = test_I$p.value,
+    OR_I = test_I$estimate
+  )
+
+}) %>%
+  bind_rows()
+
+# ---------------------------------------------------------
+# Adjust p-values
+# ---------------------------------------------------------
+
+enrichment_results <- enrichment_results %>%
+  mutate(
+    padj_I = p.adjust(p_I, method = "BH")
+  )
+
+# =========================================================
+# 4. Merge
+# =========================================================
+
+plot_df <- props %>%
+  left_join(
+    enrichment_results,
+    by = "detailed_clusters"
+  )
+
+# =========================================================
+# 5. Labels
+# =========================================================
+
+plot_df <- plot_df %>%
+  mutate(
+
+    proportion_pct = round(
+      proportion * 100,
+      1
+    ),
+
+    prop_label = paste0(
+      proportion_pct,
+      "%"
+    ),
+
+    p_label = paste0(
+      "adj.p = ",
+      signif(padj_I, 2)
+    )
+  )
+
+# =========================================================
+# 6. Order clusters
+# =========================================================
+
+cluster_order <- prop_I %>%
+  arrange(desc(proportion)) %>%
+  pull(detailed_clusters)
+
+plot_df$detailed_clusters <- factor(
+  plot_df$detailed_clusters,
+  levels = rev(cluster_order)
+)
+
+# =========================================================
+# 7. TRUE 0-100% SCALE
+# =========================================================
+# Bars now represent actual percentages
+# instead of scaling to group maxima
+# =========================================================
+
+plot_df <- plot_df %>%
+  mutate(
+    scaled_prop = proportion
+  )
+
+# =========================================================
+# 8. Palette
+# =========================================================
+
+n_clusters <- length(
+  unique(plot_df$detailed_clusters)
+)
+
+pal <- qualitative_hcl(
+  n_clusters,
+  palette = "Dark 3"
+)
+
+names(pal) <- levels(
+  plot_df$detailed_clusters
+)
+
+# =========================================================
+# 9. Plot
+# =========================================================
+
+barplots_cell_types <- ggplot(
+  plot_df,
+  aes(
+    x = group,
+    y = detailed_clusters
+  )
+) +
+
+  # -------------------------------------------------------
+  # background boxes (100% width)
+  # -------------------------------------------------------
+
+  geom_rect(
+    aes(
+      xmin = as.numeric(factor(group)) - 0.40,
+      xmax = as.numeric(factor(group)) + 0.40,
+
+      ymin = as.numeric(detailed_clusters) - 0.33,
+      ymax = as.numeric(detailed_clusters) + 0.33
+    ),
+    fill = "white",
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+
+  # -------------------------------------------------------
+  # loading bars
+  # -------------------------------------------------------
+
+  geom_rect(
+    aes(
+
+      xmin = as.numeric(factor(group)) - 0.40,
+
+      xmax =
+        (as.numeric(factor(group)) - 0.40) +
+        scaled_prop * 0.80,
+
+      ymin = as.numeric(detailed_clusters) - 0.22,
+      ymax = as.numeric(detailed_clusters) + 0.22,
+
+      fill = detailed_clusters
+    ),
+    color = NA
+  ) +
+
+  # -------------------------------------------------------
+  # proportion labels
+  # -------------------------------------------------------
+
+  geom_text(
+    data = subset(plot_df, group == "I"),
+    aes(label = prop_label),
+    x = 0.58,
+    size = 3,
+    hjust = 1
+  ) +
+
+  geom_text(
+    data = subset(plot_df, group == "II"),
+    aes(label = prop_label),
+    x = 1.58,
+    size = 3,
+    hjust = 1
+  ) +
+
+  geom_text(
+    data = subset(plot_df, group == "Total"),
+    aes(label = prop_label),
+    x = 2.58,
+    size = 3,
+    hjust = 1
+  ) +
+
+  # -------------------------------------------------------
+  # p-value labels (quadrant I enrichment, BH-adjusted)
+  # -------------------------------------------------------
+
+  geom_text(
+    data = subset(plot_df, group == "Total"),
+    aes(label = p_label),
+    x = 3.08,
+    size = 2.6,
+    hjust = 0
+  ) +
+
+  # -------------------------------------------------------
+  # colors
+  # -------------------------------------------------------
+
+  scale_fill_manual(values = pal) +
+
+  # -------------------------------------------------------
+  # theme
+  # -------------------------------------------------------
+
+  theme_minimal(base_size = 12) +
+
+  theme(
+    panel.grid = element_blank(),
+
+    axis.title = element_blank(),
+
+    legend.position = "none",
+
+    axis.text.x = element_text(
+      face = "bold",
+      size = 12
+    ),
+
+    axis.text.y = element_text(
+      face = "bold",
+      size = 11
+    ),
+
+    panel.background = element_rect(
+      fill = "grey96",
+      color = NA
+    )
+  )
+
+
+
+pdf(paste0(path2figures,
+           '/barplots_cell_types_qII.pdf'),
+    width=7.0, height=3.0)
+barplots_cell_types
+dev.off()
+
+barplots_cell_types
+```
+
+The proportions and the Fisher-test results behind the panel are saved
+to `analysis/figure_03/barplots_cell_types_qII_data.xlsx`.
+
+```{r saving_barplot_data}
+writexl::write_xlsx(
+        plot_df %>%
+                mutate(detailed_clusters = as.character(detailed_clusters)),
+        path = paste0(path2analysis, "/barplots_cell_types_qII_data.xlsx")
+)
+```
+
+
+## Neutrophils of SARS-CoV-2 positive donors (panel `neutrophils_features_scov2pos.pdf`)
+
+Neutrophils carrying SARS-CoV-2 transcripts (`SARS-CoV-2-p > 0` or
+`SARS-CoV-2-m > 0`) from SARS-CoV-2 positive donors (10-12 days post
+symptoms excluded). RIG-I-only vs STAT-only scores coloured by
+(left) viral load (`SARS-CoV-2-p`), (middle) age group (`covid_kid1`)
+and (right) IFNL1 expression.
+
+```{r neutrophils_features, fig.height=4.0, fig.width=14}
+df_signatures <- FetchData(seurat, c('stat_only1',
+                                     'rigi_only2',
+                                     'covid',
+                                     'dps',
+                                     'detailed_clusters',
+                                     'SARS-CoV-2-p',
+                                     'SARS-CoV-2-m',
+                                     'covid_kid1',
+                                     'OASL',
+                                     'IFNL1')) %>%
+        dplyr::filter(!dps %in% c('10', '11', '12')) %>%
+        dplyr::mutate(dps = factor(dps, sort(unique(dps))))
+
+neu_sarscov2 <- df_signatures %>%
+        dplyr::filter(`SARS-CoV-2-p` > 0 |
+                              `SARS-CoV-2-m` > 0) %>%
+        dplyr::filter( ! covid_kid1 %in% c('neg_adult',
+                                        'neg_children')) %>%
+        dplyr::filter(detailed_clusters %in% c(
+                                        'Neutrophil') ) %>%
+        arrange(`SARS-CoV-2-p`) %>%
+ ggplot(aes(x = rigi_only2,
+                          y = stat_only1,
+                          colour = `SARS-CoV-2-p`)) +
+  geom_point(alpha = 0.5, size = 3) +
+        viridis::scale_color_viridis() +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') +
+  geom_hline(yintercept = 0.0, linetype = 'dashed') +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    strip.text = element_text(size = 12),
+    strip.background = element_blank()
+  ) +
+  labs(
+    x = "RIGI-only Score",
+    y = "STAT-only Score",
+    title = ""
+  )
+
+
+neu_ifnl <- df_signatures %>%
+        dplyr::filter(`SARS-CoV-2-p` > 0 |
+                              `SARS-CoV-2-m` > 0) %>%
+        dplyr::filter( ! covid_kid1 %in% c('neg_adult',
+                                        'neg_children')) %>%
+        dplyr::filter(detailed_clusters %in% c(
+                                        'Neutrophil') ) %>%
+        arrange(OASL) %>%
+ ggplot(aes(x = rigi_only2,
+                          y = stat_only1,
+                          colour = IFNL1)) +
+  geom_point(alpha = 0.5, size = 3) +
+        viridis::scale_color_viridis() +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') +
+  geom_hline(yintercept = 0.0, linetype = 'dashed') +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    strip.text = element_text(size = 12),
+    strip.background = element_blank()
+  ) +
+  labs(
+    x = "RIGI-only Score",
+    y = "STAT-only Score",
+    title = ""
+  )
+
+neu_stage <- df_signatures %>%
+        dplyr::filter(`SARS-CoV-2-p` > 0 |
+                              `SARS-CoV-2-m` > 0) %>%
+        dplyr::filter( ! covid_kid1 %in% c('neg_adult',
+                                        'neg_children')) %>%
+        dplyr::filter(detailed_clusters %in% c(
+                                        'Neutrophil') ) %>%
+ ggplot(aes(x = rigi_only2,
+                          y = stat_only1,
+                          colour = covid_kid1)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') +
+  geom_hline(yintercept = 0.0, linetype = 'dashed') +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    strip.text = element_text(size = 12),
+    strip.background = element_blank()
+  ) +
+  labs(
+    x = "RIGI-only Score",
+    y = "STAT-only Score",
+    title = ""
+  )
+
+gridExtra::grid.arrange(neu_sarscov2,
+                        neu_stage,
+                        neu_ifnl, ncol = 3)
+
+
+pdf(paste0(path2figures,
+           '/neutrophils_features_scov2pos.pdf'),
+    height=4.0, width=14)
+gridExtra::grid.arrange(neu_sarscov2,
+                        neu_stage,
+                        neu_ifnl, ncol = 3)
+dev.off()
+```
+
+
+## Neutrophil subset for the children vs adults comparison (input of Supplementary Figure 3)
+
+Same neutrophils as above, excluding children neutrophils with low
+RIG-I-only score (`rigi_only2 < 0.5`) and all neutrophils with
+`stat_only1 >= 0.25`, as in the original analysis. This subset is the
+input of the differential expression analysis (children vs adults) in
+`supplementary_figure_03.Rmd`, and is saved to
+`analysis/figure_03/seurat_neutrophils_scov2pos_children_vs_adults.rds`.
+
+```{r neutrophil_subset, fig.width=5.5, fig.height=4}
+selected_cells <- df_signatures %>%
+        dplyr::filter(`SARS-CoV-2-p` > 0 |
+                              `SARS-CoV-2-m` > 0) %>%
+        dplyr::filter( ! covid_kid1 %in% c('neg_adult',
+                                        'neg_children')) %>%
+        dplyr::filter(detailed_clusters %in% c(
+                                        'Neutrophil') )  %>%
+        dplyr::filter( ! ( rigi_only2 < 0.5 &
+                                  covid_kid1 == 'pos_children' ) ) %>%
+        rownames()
+
+
+seurat_subset <- seurat[, selected_cells]
+seurat_subset <- subset(seurat_subset, stat_only1 < 0.25)
+
+seurat_subset$covid_kid1 %>% table
+
+saveRDS(seurat_subset,
+        file = paste0(path2analysis,
+                      "/seurat_neutrophils_scov2pos_children_vs_adults.rds"))
+```
+
+
+Session Information
+
+
+```{r session_info}
+sessionInfo()
+```

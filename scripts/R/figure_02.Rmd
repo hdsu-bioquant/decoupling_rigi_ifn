@@ -1,0 +1,644 @@
+---
+title: "Figure 2: RIG-I-only vs STAT-only signatures in influenza-infected A549 cells (scRNA-Seq)"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This markdown reproduces the panels of **Figure 2**. We project the
+RIG-I-only and STAT-only (IFN-only) signatures, derived from the A549
+bulk model in Figure 1, onto single-cell RNA-Seq data of A549 cells
+infected with influenza A virus (H3N2) over a time course (uninfected,
+8, 10, 12, 14 and 16 h post infection;
+[Rivera et al. 2025, GSE287024](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE287024)).
+Every cell is scored with both signatures (Seurat `AddModuleScore`), and
+cells are classified into two quadrants of the RIG-I-only vs STAT-only
+score plane:
+
+* **Quadrant I**: high RIG-I-only score and low STAT-only score
+  (`rigi_only >= 0.1` and `stat_only <= 0.05`), i.e. cells with direct
+  RIG-I activity but no IFN-receptor signalling.
+* **Quadrant II**: high STAT-only score and low RIG-I-only score
+  (`stat_only >= 0.05` and `rigi_only < 0`), i.e. bystander cells
+  responding to secreted IFN.
+
+Panels produced (all saved in `figures/figure_02/`):
+
+| Panel file | Content |
+|---|---|
+| `a549_quadrantes_across_time_rivera.pdf` | RIG-I-only vs STAT-only scores per time point, coloured by quadrant |
+| `barplot_prop_quadrants_rivera.pdf` | Proportion of all cells falling in quadrant I / II per time point |
+| `quantification_interferon_expression_rivera.pdf` | IFNB1, IFNL1 and IFNL2 expression in quadrant I vs II cells per time point (Wilcoxon test) |
+| `oasl_ifnl1_ha_rigi_vs_stat.pdf` | RIG-I-only vs STAT-only scores of infected cells coloured by IFNL1, OASL and viral HA expression |
+| `oasl_vs_rigi.pdf` | Viral HA expression vs OASL expression / RIG-I-only score, coloured and sized by IFNL1 |
+
+The code was taken from the original analysis script
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/02_scRNASeq_projections_Rivera.Rmd`
+keeping only what is needed for these panels; plotting code, PDF sizes and
+aesthetics are unchanged.
+
+
+# Input data
+
+| Input | Absolute path / source |
+|---|---|
+| Raw 10x count matrices (GEO [GSE287024](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE287024), samples GSM8736732-GSM8736742; `*_matrix.mtx.gz`, `*_features.tsv.gz`, `*_barcodes.tsv.gz`) | `/media/bq-storage/ag-cherrmann/cramirez/data/Rivera_H3N2_A549/GSE287024_RAW/` |
+| Processed Seurat object (merged, normalised, PCA/UMAP; cached output of the raw-data processing below; contains the sample/time-point annotation in its metadata: `orig.ident`, `sample`, `condition`, `timepoint`, `replicate`) | `/media/bq-storage/ag-cherrmann/cramirez/data/Rivera_H3N2_A549/GSE287024_RAW/a549_iav_rivera_scRNASeq.rds` |
+| Sample annotation | defined in code below from the GEO sample names (chunk `selecting_samples`) |
+| RIG-I-only / STAT-only signatures (written by `figure_01.Rmd`) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/rigi_vs_stat_only_signatures.rds` (`path2signs` in `settings.R`) |
+| Shared settings (paths, colours) | `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R` |
+
+No MSigDB gene sets are used for the panels of this figure.
+
+
+```{r dependencies, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(purrr)
+library(scales)
+library(Seurat)
+library(stringr)
+library(RColorBrewer)
+library(ggpubr)
+library(gridExtra)
+
+source("/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R")
+```
+
+
+## Initial settings
+
+Output folders of this section (`figures/figure_02/` and
+`analysis/figure_02/` in the repository) and the raw-data flags. Both
+`reprocess` and `rerun` were `FALSE` in the original analysis: the cached
+processed Seurat object is loaded instead of re-processing the raw data.
+
+```{r settings, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+dirs <- section_dirs("figure_02")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+reprocess <- FALSE
+rerun <- FALSE
+```
+
+
+# Loading the scRNA-Seq data
+
+Raw data folder (GEO GSE287024 supplementary files).
+
+```{r, checking_store_folder}
+path2rivera <- '/media/bq-storage/ag-cherrmann/cramirez/data/Rivera_H3N2_A549/GSE287024_RAW/'
+
+list.files(path2rivera)
+```
+
+Sample annotation: one uninfected control and two replicates per
+infection time point.
+
+```{r, selecting_samples}
+samples <- tibble::tibble(
+  sample_id = c(
+    "Uninfected",
+    "Infected_8h_1", "Infected_8h_2",
+    "Infected_10h_1", "Infected_10h_2",
+    "Infected_12h_1", "Infected_12h_2",
+    "Infected_14h_1", "Infected_14h_2",
+    "Infected_16h_1", "Infected_16h_2"
+  ),
+  prefix = c(
+    "GSM8736732_Uninfected",
+    "GSM8736733_Infected_8hrs_1",
+    "GSM8736734_Infected_8hrs_2",
+    "GSM8736735_Infected_10hrs_1",
+    "GSM8736736_Infected_10hrs_2",
+    "GSM8736737_Infected_12hrs_1",
+    "GSM8736738_Infected_12hrs_2",
+    "GSM8736739_Infected_14hrs_1",
+    "GSM8736740_Infected_14hrs_2",
+    "GSM8736741_Infected_16hrs_1",
+    "GSM8736742_Infected_16hrs_2"
+  )
+)
+```
+
+## Raw-data processing (not evaluated)
+
+The next three chunks document how the cached Seurat object was built
+from the raw 10x matrices: one Seurat object per sample (cells with at
+least 3000 detected genes), sample annotation added to the metadata,
+merging, log-normalisation, scaling, PCA and UMAP. They are **not
+evaluated** (`eval = FALSE`; the original guarded them with
+`reprocess`/`rerun = FALSE`) because the processing is slow and its result
+is stored in `a549_iav_rivera_scRNASeq.rds`, which is loaded below. Note
+that the saving step would write into the data folder; it must not be run
+from this repository without changing the output path.
+
+```{r, creating_seurat_object, eval=FALSE}
+path <- path2rivera
+
+if ( reprocess == TRUE ){
+          seurat_list <- lapply(seq_len(nrow(samples)), function(i) {
+
+          counts <- ReadMtx(
+            mtx = file.path(path, paste0(samples$prefix[i], "_matrix.mtx.gz")),
+            features = file.path(path, paste0(samples$prefix[i], "_features.tsv.gz")),
+            cells = file.path(path, paste0(samples$prefix[i], "_barcodes.tsv.gz"))
+          )
+
+          obj <- CreateSeuratObject(
+            counts = counts,
+            project = samples$sample_id[i],
+            min.cells = 0,
+            min.features = 3000
+          )
+
+          # Add metadata
+          obj$sample     <- samples$sample_id[i]
+          obj$condition  <- ifelse(str_detect(samples$sample_id[i], "Uninfected"),
+                                   "Uninfected", "Infected")
+          obj$timepoint  <- str_extract(samples$sample_id[i], "\\d+h")
+          obj$replicate  <- str_extract(samples$sample_id[i], "_\\d$")
+
+          return(obj)
+        })
+
+        names(seurat_list) <- samples$sample_id
+}
+```
+
+Merging the per-sample Seurat objects.
+
+```{r, merging_seurat_objects, eval=FALSE}
+if ( reprocess == TRUE ) {
+       merged_obj <- merge(
+  x = seurat_list[[1]],
+  y = seurat_list[-1],
+  add.cell.ids = names(seurat_list),
+  project = "Rivera_concat"
+)
+merged_obj
+
+rm(seurat_list)
+}
+```
+
+Standard pre-processing and saving of the cached object.
+
+```{r, standard_preprocessing, eval=FALSE}
+if ( rerun == TRUE ) {
+        DefaultAssay(merged_obj) <- "RNA"
+        merged_obj <- NormalizeData(merged_obj, verbose = FALSE)
+        merged_obj <- FindVariableFeatures(merged_obj,
+                                   nfeatures = 20000)
+        merged_obj <- ScaleData(merged_obj, verbose = FALSE)
+        merged_obj <- RunPCA(merged_obj, npcs = 50)
+        merged_obj <- RunUMAP(merged_obj, dims = 1:49, verbose = FALSE)
+
+        saveRDS(merged_obj,
+                file = paste0(path2rivera,
+                              "/a549_iav_rivera_scRNASeq.rds"),
+                compress = TRUE)
+}
+```
+
+## Loading the cached processed object
+
+Loading the processed Seurat object (same file loaded by the original
+analysis).
+
+```{r, loading_seurat_object}
+merged_obj <- readRDS(file = paste0(path2rivera,
+                              "/a549_iav_rivera_scRNASeq.rds"))
+merged_obj
+table(merged_obj$orig.ident)
+```
+
+Score columns already stored in the cached object (if any). They are kept
+aside to compare with the scores recomputed below.
+
+```{r, cached_scores}
+cached_score_cols <- intersect(c("stat_only1", "rigi_only2"),
+                               colnames(merged_obj@meta.data))
+cached_score_cols
+cached_scores <- merged_obj@meta.data[, cached_score_cols, drop = FALSE]
+```
+
+
+# Scoring cells with the RIG-I-only / STAT-only signatures
+
+## Loading signatures
+
+Signatures from Figure 1 (`path2signs`). As in the original analysis,
+genes whose symbol contains "IFN" are removed (to avoid scoring the
+interferon transcripts themselves, which are later used as read-outs) and
+the list is re-ordered to `stat_only`, `rigi_only`. Because of this
+order, `AddModuleScore` names the score columns `stat_only1` and
+`rigi_only2`.
+
+```{r, loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             grep(pattern = 'IFN',
+                                  x = genes,
+                                  value = TRUE,
+                                  invert = TRUE)
+                     })
+signatures <- signatures[c(2, 1)]
+str(signatures)
+```
+
+## Scoring cells
+
+Module scores with Seurat `AddModuleScore` (default `seed = 1`, hence
+deterministic).
+
+```{r, scoring_cells, warning=FALSE, message=FALSE}
+merged_obj <- AddModuleScore(
+  object = merged_obj,
+  features = signatures,
+  name = names(signatures)
+)
+```
+
+Comparison of recomputed scores with those stored in the cached object
+(only if the cached object contained score columns).
+
+```{r, compare_cached_scores}
+if (length(cached_score_cols) > 0) {
+        for (sc in cached_score_cols) {
+                d <- merged_obj@meta.data[rownames(cached_scores), sc] -
+                        cached_scores[[sc]]
+                cat(sc, ": max |recomputed - cached| =",
+                    max(abs(d), na.rm = TRUE), "\n")
+        }
+} else {
+        cat("The cached object does not contain stat_only1 / rigi_only2 scores;",
+            "scores are computed here only.\n")
+}
+```
+
+## Extracting scores and expression values
+
+Cell metadata with a discrete time-point factor (uninfected cells =
+`Control`) plus the log-normalised expression of IFNL1, IFNL2, IFNB1,
+OASL and the viral haemagglutinin (HA) transcript.
+
+```{r, extracting_features, warning=FALSE, message=FALSE}
+md <- merged_obj@meta.data
+md$'time_discrete' <- md$timepoint
+md$'time_discrete'[is.na(md$'time_discrete')] <- 'Control'
+md$'time_discrete' <- factor(md$'time_discrete',
+                             levels = c('Control', '8h', '10h',
+                                        '12h', '14h', '16h'))
+
+df <- FetchData(merged_obj, vars = c('IFNL1', 'HA', 'OASL',
+                                     'IFNB1', 'IFNL2'))
+all(rownames(df) == colnames(merged_obj))
+md$'IFNL1' <- df$IFNL1
+md$'IFNB1' <- df$IFNB1
+md$'IFNL2' <- df$IFNL2
+md$'HA' <- df$HA
+md$'OASL' <- df$OASL
+```
+
+
+# Quadrant classification (panel `a549_quadrantes_across_time_rivera.pdf`)
+
+Cells are assigned to quadrant I (`stat_only1 <= 0.05` and
+`rigi_only2 >= 0.1`) or quadrant II (`stat_only1 >= 0.05` and
+`rigi_only2 < 0`); all other cells are `NA`. The scatter plot shows the
+two scores per time point coloured by quadrant.
+
+```{r, quadrants, fig.width=5.0, fig.height=3.0}
+md$quadrant_q <- with(md,
+  ifelse(stat_only1 <= 0.05 & rigi_only2 >= 0.1, "I",
+  ifelse(stat_only1 >= 0.05 & rigi_only2 < -0.0, "II", NA))
+)
+
+cols <- brewer.pal(4, "Set2")[2:4]
+names(cols) <- c("I", "II")
+
+f1 <- ggplot(md, aes(x = rigi_only2, y = stat_only1,
+               color = quadrant_q)) +
+  geom_point(alpha = 0.8, size = 1) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+        facet_wrap(~time_discrete) +
+        scale_color_manual(values = cols) +
+  labs(
+    x = "RIGI-only",
+    y = "STAT-only",
+    color = "Quadrant"
+  ) +
+  theme_bw()
+
+f1
+
+pdf(file = paste0(path2figures,
+                  '/a549_quadrantes_across_time_rivera.pdf'),
+    width=5.0, height=3.0)
+f1
+dev.off()
+```
+
+Saving the per-cell scores, quadrant assignment and expression values
+used by all panels.
+
+```{r, saving_cell_table}
+cell_table <- md %>%
+        tibble::rownames_to_column("cell") %>%
+        dplyr::select(cell, orig.ident, timepoint, time_discrete,
+                      stat_only1, rigi_only2, quadrant_q,
+                      IFNL1, IFNL2, IFNB1, OASL, HA)
+write_tsv(cell_table,
+          file = paste0(path2analysis, "/rivera_cell_scores_quadrants.tsv.gz"))
+table(cell_table$time_discrete, cell_table$quadrant_q, useNA = "ifany")
+```
+
+
+# IFN expression per quadrant (panel `quantification_interferon_expression_rivera.pdf`)
+
+Log expression of IFNB1, IFNL1 and IFNL2 in quadrant I vs quadrant II
+cells per time point; significance of I vs II within each time point by
+Wilcoxon test (`ggpubr::stat_compare_means`).
+
+```{r, ifn_expression, fig.width=9.0, fig.height=5.0}
+p_ifnb1 <- md %>%
+        filter(!is.na(quadrant_q)) %>%
+ggplot(aes(x = time_discrete,
+           y = log(IFNB1+1),
+           fill = quadrant_q)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+        # Add p-values (I vs II within each timepoint)
+  stat_compare_means(
+    aes(group = quadrant_q),
+    method = "wilcox.test",
+    label = 'p.signif', label.y = 1.5
+  ) +
+  scale_fill_manual(values = cols) +
+  labs(
+    x = "",
+    y = "Log(IFNB1 expression)",
+    fill = "Quadrant"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+p_ifnl1 <- md %>%
+        filter(!is.na(quadrant_q)) %>%
+ggplot(aes(x = time_discrete,
+           y = log(IFNL1+1),
+           fill = quadrant_q)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+        # Add p-values (I vs II within each timepoint)
+  stat_compare_means(
+    aes(group = quadrant_q),
+    method = "wilcox.test",
+    label = 'p.signif', label.y = 1.5
+  ) +
+  scale_fill_manual(values = cols) +
+  labs(
+    x = "",
+    y = "Log(IFNL expression)",
+    fill = "Quadrant"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+p_ifnl2 <- md %>%
+        filter(!is.na(quadrant_q)) %>%
+ggplot(aes(x = time_discrete,
+           y = log(IFNL2+1),
+           fill = quadrant_q)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+        # Add p-values (I vs II within each timepoint)
+  stat_compare_means(
+    aes(group = quadrant_q),
+    method = "wilcox.test",
+    label = 'p.signif', label.y = 1.5
+  ) +
+  scale_fill_manual(values = cols) +
+  labs(
+    x = "",
+    y = "Log(IFNL2 expression)",
+    fill = "Quadrant"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+gridExtra::grid.arrange(
+        p_ifnb1, p_ifnl1, p_ifnl2,
+        ncol = 2
+)
+
+pdf(paste0(path2figures,
+           '/quantification_interferon_expression_rivera.pdf'),
+    width=9.0, height=5.0)
+gridExtra::grid.arrange(
+        p_ifnb1,
+        p_ifnl1, p_ifnl2,
+        ncol = 2
+)
+dev.off()
+```
+
+
+# Proportion of cells per quadrant (panel `barplot_prop_quadrants_rivera.pdf`)
+
+Fraction of all cells of each time point that fall into quadrant I or
+quadrant II (denominator includes unassigned cells).
+
+```{r, barplot_quadrants, fig.width=5.0, fig.height=2.5}
+count_df_vs_all_cells <- md %>%
+  group_by(time_discrete, quadrant_q) %>%
+        summarise(n_cells=n())
+
+prop_q_vs_all_cells_df <- count_df_vs_all_cells %>%
+  group_by(time_discrete) %>%
+  mutate(prop = n_cells / sum(n_cells))
+
+write_tsv(prop_q_vs_all_cells_df,
+          file = paste0(path2analysis, "/rivera_quadrant_proportions.tsv"))
+
+barplot_prop_q_vs_all_cell <- prop_q_vs_all_cells_df %>%
+        filter(!is.na(quadrant_q)) %>%
+ggplot(aes(x = time_discrete,
+                    y = prop,
+                    fill = quadrant_q)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+        facet_wrap(~quadrant_q, scales = "free") +
+  scale_fill_manual(values = cols) +
+  labs(
+    x = "",
+    y = "Proportion of cells",
+    fill = "Quadrant"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        legend.position = 'none')
+
+pdf(file = paste0(path2figures,
+                  "/barplot_prop_quadrants_rivera.pdf"),
+    width=5.0, height=2.5)
+barplot_prop_q_vs_all_cell
+dev.off()
+
+barplot_prop_q_vs_all_cell
+```
+
+
+# IFNL1, OASL and viral load on the score plane (panel `oasl_ifnl1_ha_rigi_vs_stat.pdf`)
+
+Infected cells (all time points except `Control`) on the RIG-I-only vs
+STAT-only plane, coloured by IFNL1, OASL or HA (viral) expression. Cells
+are sorted by the colour variable so that high expressers are drawn on
+top.
+
+```{r, oasl_ifnl1_ha, fig.height=2.5, fig.width=12.0}
+ifnl1 <- md %>%
+        filter(time_discrete!='Control') %>%
+        arrange(IFNL1) %>%
+        ggplot(aes(rigi_only2,
+                   stat_only1,
+                   colour = IFNL1)) +
+        geom_hline(yintercept = 0, size = 1.2) +
+         geom_vline(xintercept = 0, size = 1.2) +
+           geom_point(size=2) +
+                scale_colour_gradient2(
+  low = "darkgreen",
+  mid = "yellow",
+  high = "red",
+  midpoint = 2,
+  name = "IFNL1"
+  ) +
+        theme_bw()
+
+oasl <- md %>%
+        filter(time_discrete!='Control') %>%
+        arrange(OASL) %>%
+        ggplot(aes(rigi_only2,
+                   stat_only1,
+                   colour = OASL)) +
+        geom_hline(yintercept = 0, size = 1.2) +
+         geom_vline(xintercept = 0, size = 1.2) +
+           geom_point(size=2) +
+                scale_colour_gradient2(
+  low = "darkgreen",
+  mid = "yellow",
+  high = "red",
+  midpoint = 2,
+  name = "OASL"
+  ) +
+        theme_bw()
+
+virus <- md %>%
+        filter(time_discrete!='Control') %>%
+        arrange(HA) %>%
+        ggplot(aes(rigi_only2,
+                   stat_only1,
+                   colour = HA)) +
+        geom_hline(yintercept = 0, size = 1.2) +
+         geom_vline(xintercept = 0, size = 1.2) +
+           geom_point(size=2) +
+                scale_colour_gradient2(
+  low = "darkgreen",
+  mid = "yellow",
+  high = "red",
+  midpoint = 5,
+  name = "Viral expression"
+  ) +
+        theme_bw()
+
+
+gridExtra::grid.arrange(
+        ifnl1, oasl, virus, ncol = 3
+)
+
+
+pdf(file = paste0(path2figures,
+                  '/oasl_ifnl1_ha_rigi_vs_stat.pdf'),
+    height=2.5, width=12.0)
+gridExtra::grid.arrange(
+        ifnl1, oasl, virus, ncol = 3
+)
+dev.off()
+```
+
+
+# Viral load vs OASL and RIG-I-only score (panel `oasl_vs_rigi.pdf`)
+
+Left: HA (viral) vs OASL expression of infected OASL-expressing cells.
+Right: HA vs RIG-I-only score of all infected cells. Points are coloured
+and sized by IFNL1 expression.
+
+```{r, oasl_vs_rigi, fig.height=3.5, fig.width=7}
+oasl_vs_rigi_oasl <- md %>%
+        filter(time_discrete!='Control') %>%
+        filter(OASL > 0 ) %>%
+        arrange(IFNL1) %>%
+        ggplot(aes(OASL,HA,
+                   colour = IFNL1,
+                   size = IFNL1)) +
+           geom_point() +
+                scale_colour_gradient2(
+  low = "darkgreen",
+  mid = "yellow",
+  high = "red",
+  midpoint = 2,
+  name = "IFNL1"
+  ) +
+        theme_bw()
+
+oasl_vs_rigi_rigi <- md %>%
+        filter(time_discrete!='Control') %>%
+        arrange(IFNL1) %>%
+        ggplot(aes(rigi_only2,HA,
+                   colour = IFNL1,
+                   size = IFNL1)) +
+           geom_point() +
+                scale_colour_gradient2(
+  low = "darkgreen",
+  mid = "yellow",
+  high = "red",
+  midpoint = 2,
+  name = "IFNL1"
+  ) +
+        theme_bw()
+
+gridExtra::grid.arrange(oasl_vs_rigi_oasl,
+                        oasl_vs_rigi_rigi, ncol = 2)
+
+pdf(file = paste0(path2figures,
+                  '/oasl_vs_rigi.pdf'),
+    height=3.5, width=7)
+gridExtra::grid.arrange(oasl_vs_rigi_oasl,
+                        oasl_vs_rigi_rigi, ncol = 2)
+dev.off()
+```
+
+
+# Session Information
+
+```{r, session_info}
+sessionInfo()
+```

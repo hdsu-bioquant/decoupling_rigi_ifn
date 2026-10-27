@@ -1,0 +1,698 @@
+---
+title: "Figure 4: RIG-I-only and STAT-only programs in cervical cancer spatial transcriptomics"
+author: "Carlos Ramirez"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+
+This document reproduces the panels of **Figure 4**, in which the
+RIG-I-only and STAT-only (IFN-only) signatures defined in Figure 1 are
+evaluated in a cervical squamous cell carcinoma sample profiled with
+10x Genomics Xenium (whole-transcriptome preview panel, FFPE). The figure shows:
+
+1. `ranked_cell_types_rigi_only_cc.pdf` – the six Xenium cell types with the
+   highest median RIG-I-only score. To avoid that the score is driven by a
+   generic NF-kB/TNF response, the RIG-I-only genes that are also part of the
+   MSigDB `HALLMARK_TNFA_SIGNALING_VIA_NFKB` set are removed before scoring
+   (score `rigi_specific1`).
+2. `ranked_cell_types_stat_only_cc.pdf` – the six Xenium cell types with the
+   highest median STAT-only score (`stat_only1`).
+3. `distance_to_rigi_high.pdf` – the STAT-only score of every Xenium cell as a
+   function of its distance to the nearest RIG-I-high cell (top 10 % RIG-I-only
+   score), compared with the distance to the nearest RIG-I-low cell
+   (bottom 10 %, control reference). Points are medians, error bars the IQR.
+
+The code was extracted from the original analysis scripts
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/04_cervical_cancer_scRNASeq_analysis.Rmd`
+(panels 1 and 2) and
+`/media/ag-cherrmann/cramirez/interferon_model/scripts/R/july_2026/04_cervical_cancer_cell_communication.Rmd`
+(panel 3). Only the code needed for these panels (and its upstream
+dependencies) is kept; plotting code and PDF sizes are unchanged.
+
+
+## Input data
+
+All paths are absolute. Data folders are treated as read-only by this document.
+
+**Xenium spatial transcriptomics (cervical cancer)**
+
+- Dataset: 10x Genomics *Xenium Prime / WTA Preview – FFPE Human Cervical
+  Cancer* (`WTA_Preview_FFPE_Cervical_Cancer`), downloaded from the 10x Genomics
+  datasets portal. Raw archives:
+  `/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/WTA_Preview_FFPE_Cervical_Cancer_outs.zip`
+  and `/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/WTA_Preview_FFPE_Cervical_Cancer_xe_outs.zip`.
+- Unpacked Xenium output folder:
+  `/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/Xenium_output`
+  (count matrix `cell_feature_matrix.h5`, cell centroids `cells.csv.gz`).
+- Cell-type annotations provided with the dataset:
+  `/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/WTA_Preview_FFPE_Cervical_Cancer_cell_groups.csv`
+  (columns `cell_id`, `group`).
+- Processed Seurat object (log-normalised, annotated cells only; produced by
+  the `eval = FALSE` chunks below and loaded here):
+  `/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/seurat_transcriptome_processed_seu.rds`.
+
+**Derived table: `stat_scores_by_spatial_distance.tsv`** (panel 3)
+
+`/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/stat_scores_by_spatial_distance.tsv`
+(717,283 cells) was generated in Python by the notebook
+`/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/distance_analysis.ipynb`
+(kernel `spatial_env`, Python 3.12; file written 2026-09-22 14:35, notebook cell 50):
+
+1. The Xenium output folder is read with `spatialdata_io.xenium("Xenium_output")`;
+   counts are normalised with `scanpy.pp.normalize_total` and `scanpy.pp.log1p`.
+2. Cells are scored with `scanpy.tl.score_genes` using the RIG-I-only
+   (`rigi_score`) and STAT-only (`stat_score`) gene lists hard-coded in the
+   notebook (identical to the 94 / 99 genes in
+   `rigi_vs_stat_only_signatures.rds`, restricted to genes in the panel).
+3. Only cells in `WTA_Preview_FFPE_Cervical_Cancer_cell_groups.csv` are kept and
+   the annotation is stored as `celltype`; centroids (`x`, `y`, µm) are taken
+   from `obsm["spatial"]`.
+4. RIG-I-high cells = `rigi_score >= 90th percentile` (0.0501);
+   RIG-I-low cells = `rigi_score <= 10th percentile` (-0.0156).
+5. For every cell the Euclidean distance to the nearest RIG-I-high and to the
+   nearest RIG-I-low cell is computed with `scipy.spatial.cKDTree`
+   (`distance_to_rigi_high`, `distance_to_rigi_low`).
+6. The distances are binned with `pandas.cut` (left-closed bins 0, 25, 50, 75,
+   100, 150, 200, 300, 400 µm) into `distance_band_rigi_high` and
+   `distance_band_rigi_low`, and the table is written as TSV.
+
+The notebook cells were executed out of order; the column `distance_band`
+in the TSV comes from an earlier binning step whose cell was later overwritten.
+That column is not used for Figure 4.
+
+**Gene sets**
+
+- RIG-I-only / STAT-only signatures (defined in `figure_01.Rmd`):
+  `/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/analysis/figure_01/rigi_vs_stat_only_signatures.rds`
+  (identical to the file used originally,
+  `/media/ag-cherrmann/cramirez/interferon_model/analysis/2026_May/rigi_vs_stat_only_signatures.rds`).
+- MSigDB Hallmark TNF-alpha signalling via NF-kB, downloaded at run time from
+  <https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_TNFA_SIGNALING_VIA_NFKB&fileType=grp>
+  (a copy of the list used in this run is written to `analysis/figure_04/`).
+
+**Not used by these panels.** The original script also processes the cervical
+cancer scRNA-seq dataset of Li C. *et al.* 2022 (ArrayExpress
+[E-MTAB-11948](https://www.ebi.ac.uk/biostudies/ArrayExpress/studies/E-MTAB-11948);
+raw 10x matrices in `/media/bq-storage/ag-cherrmann/cramirez/data/cervical_cancer/hua_2022/E-MTAB-11948`,
+processed object `/media/bq-storage/ag-cherrmann/cramirez/data/cervical_cancer/hua_2022/E-MTAB-11948/processed_cervical_cancer_Li_2022_seu.rds`).
+None of the three Figure 4 panels depends on it, so that part is not included.
+
+
+## Dependencies and settings
+
+```{r, dependencies, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Seurat)
+library(tibble)
+```
+
+The shared settings define the repository paths, the path to the signatures
+(`path2signs`) and the output folders of this section.
+
+```{r, setting_up}
+source("/media/bq-storage/ag-cherrmann/cramirez/decoupling_rigi_ifn/scripts/R/settings.R")
+
+dirs <- section_dirs("figure_04")
+path2figures <- dirs$figures
+path2analysis <- dirs$analysis
+
+path2xenium_data <- "/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer"
+```
+
+
+## Processing of the Xenium dataset (not re-run)
+
+The following two chunks show how the processed Seurat object
+`seurat_transcriptome_processed_seu.rds` was generated from the raw Xenium
+output: the count matrix is loaded, the dataset cell-type annotations are
+added, only annotated cells are kept, and the data are log-normalised
+(plus HVG/PCA/UMAP, not used here). They are kept for documentation with
+`eval = FALSE`; the cached object is loaded below.
+
+```{r, processing_spatial_data, eval=FALSE}
+xenium_dir <- "/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/Xenium_output"
+xenium_counts <- Read10X_h5(
+    filename = file.path(xenium_dir, "cell_feature_matrix.h5")
+)
+dim(xenium_counts$`Gene Expression`)
+
+spat_anns_path <- "/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/WTA_Preview_FFPE_Cervical_Cancer_cell_groups.csv"
+spat_anns <- readr::read_csv(spat_anns_path)
+
+seurat_xenium <- CreateSeuratObject(
+    counts = xenium_counts$`Gene Expression`,
+    project = "CervicalCancer_Xenium",
+    min.cells = 0,
+    min.features = 0
+)
+
+seurat_xenium$"cell_type" <- plyr::mapvalues(
+        x = colnames(seurat_xenium),
+        from = spat_anns$cell_id,
+        to = spat_anns$group,
+        warn_missing = FALSE
+)
+```
+
+```{r, preprocessing_spatial_data, eval=FALSE}
+## Using only annotated cells
+seurat_xenium <- seurat_xenium[, colnames(seurat_xenium) %in% spat_anns$cell_id]
+
+# 1. Log-normalization
+seurat_xenium <- NormalizeData(
+    seurat_xenium,
+    normalization.method = "LogNormalize",
+    scale.factor = 10000,
+    verbose = TRUE
+)
+
+# 2. Identify variable features
+seurat_xenium <- FindVariableFeatures(
+    seurat_xenium,
+    selection.method = "vst",
+    nfeatures = 3000,
+    verbose = TRUE
+)
+
+# 3. Scale variable features
+seurat_xenium <- ScaleData(
+    seurat_xenium,
+    features = VariableFeatures(seurat_xenium),
+    verbose = TRUE
+)
+
+# 4. PCA
+seurat_xenium <- RunPCA(
+    seurat_xenium,
+    features = VariableFeatures(seurat_xenium),
+    npcs = 50,
+    verbose = TRUE
+)
+
+# 5. Nearest-neighbor graph
+seurat_xenium <- FindNeighbors(
+    seurat_xenium,
+    dims = 1:30,
+    verbose = TRUE
+)
+
+# 6. UMAP
+seurat_xenium <- RunUMAP(
+    seurat_xenium,
+    dims = 1:30,
+    reduction = "pca",
+    return.model = FALSE,
+    verbose = TRUE
+)
+
+# Saving (original location; never overwritten from this document)
+saveRDS(seurat_xenium,
+        file = "/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/seurat_transcriptome_processed_seu.rds",
+        compress = TRUE)
+```
+
+
+## Loading the processed Xenium object
+
+Loading the cached, processed Seurat object (all annotated Xenium cells).
+
+```{r, loading_xenium}
+seurat_xenium <- readRDS(
+        file.path(path2xenium_data, "seurat_transcriptome_processed_seu.rds")
+)
+seurat_xenium
+table(seurat_xenium$cell_type)
+```
+
+Module-score columns already stored in the cached object (if any) are kept
+aside so they can be compared with the scores recomputed below.
+
+```{r, cached_scores}
+score_cols <- c("rigi_only2", "stat_only1", "rigi_specific1")
+cached_scores <- seurat_xenium@meta.data[, intersect(score_cols,
+                                                     colnames(seurat_xenium@meta.data)),
+                                         drop = FALSE]
+colnames(cached_scores)
+```
+
+
+## Loading the signatures
+
+RIG-I-only and STAT-only signatures from Figure 1. As in the original script,
+interferon genes (IFNB/IFNL) are removed and the list is re-ordered so that the
+module scores are named `stat_only1` and `rigi_only2`.
+
+```{r, loading_signatures}
+signatures <- readRDS(path2signs)
+signatures <- lapply(signatures,
+                     function(genes){
+                             genes[!grepl('IFNB|IFNL', genes)]
+})
+signatures <- signatures[c(2,1)]
+str(signatures)
+```
+
+
+## Scoring the Xenium cells
+
+Seurat module scores (`AddModuleScore`, fixed seed, hence deterministic) for the
+STAT-only and RIG-I-only signatures (panel 2 uses `stat_only1`).
+
+```{r, scoring_signatures}
+seurat_xenium <- AddModuleScore(
+  object = seurat_xenium,
+  features = signatures,
+  assay = "RNA",
+  name = names(signatures)
+)
+```
+
+For panel 1, the RIG-I-only genes that also belong to the MSigDB Hallmark
+TNF-alpha/NF-kB gene set are removed (`rigi_specific`) and the remaining genes
+are scored. (As in the original, only the first line of the `.grp` file, the
+gene-set name, is dropped; the remaining comment line matches no gene.)
+
+```{r, scoring_rigi_specific}
+nfkb_url <- "https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_TNFA_SIGNALING_VIA_NFKB&fileType=grp"
+nfkb_sign <- readLines(nfkb_url)
+nfkb_sign <- nfkb_sign[2:length(nfkb_sign)]
+writeLines(nfkb_sign,
+           file.path(path2analysis, "HALLMARK_TNFA_SIGNALING_VIA_NFKB.grp"))
+
+rigi_specific <- setdiff(signatures$rigi_only, nfkb_sign)
+rigi_specific_list <- list(rigi_specific=rigi_specific)
+length(rigi_specific)
+
+seurat_xenium <- AddModuleScore(
+  object = seurat_xenium,
+  features = rigi_specific_list,
+  assay = "RNA",
+  name = "rigi_specific"
+  )
+```
+
+Comparison of the recomputed scores with those stored in the cached object
+(if present), and export of the per-cell scores.
+
+```{r, compare_and_save_scores}
+for (sc in colnames(cached_scores)) {
+        d <- seurat_xenium@meta.data[rownames(cached_scores), sc] - cached_scores[[sc]]
+        cat(sc, ": max |recomputed - cached| =", max(abs(d), na.rm = TRUE), "\n")
+}
+
+xenium_scores <- seurat_xenium@meta.data %>%
+        rownames_to_column(var = "cell_id") %>%
+        dplyr::select(cell_id, cell_type, rigi_only2, stat_only1, rigi_specific1)
+readr::write_tsv(xenium_scores,
+                 file.path(path2analysis, "xenium_cell_module_scores.tsv.gz"))
+```
+
+
+## Panel: cell types ranked by RIG-I-only score
+
+Top six cell types by median `rigi_specific1` score
+(`ranked_cell_types_rigi_only_cc.pdf`).
+
+```{r, ranked_cell_types_rigi_only, fig.width=6, fig.height=2.5}
+# Extract data
+plot_df <- FetchData(
+    seurat_xenium,
+    vars = c("rigi_specific1", "cell_type")
+)
+
+# Remove rows with missing values
+plot_df <- plot_df %>%
+    filter(
+        !is.na(cell_type),
+        !is.na(rigi_specific1)
+    )
+
+# Calculate median score and rank cell types
+cell_order <- plot_df %>%
+    group_by(cell_type) %>%
+    summarise(
+        median_score = median(rigi_specific1, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    arrange(median_score) %>%
+    pull(cell_type)
+
+# Select the top 6 cell types
+top6_cell_types <- tail(cell_order, 6)
+top6_cell_types
+
+# Filter BEFORE converting to factor
+plot_df_top6 <- plot_df %>%
+    filter(cell_type %in% top6_cell_types)
+
+# Order the top 6 according to median score
+plot_df_top6$cell_type <- factor(
+    plot_df_top6$cell_type,
+    levels = top6_cell_types
+)
+
+# Safety check
+stopifnot(!any(is.na(plot_df_top6$cell_type)))
+
+# Plot
+boxplot_ranked_cell_types <- ggplot(
+    plot_df_top6,
+    aes(
+        x = cell_type,
+        y = rigi_specific1
+    )
+) +
+    geom_boxplot(
+        outlier.size = 0.1,
+        linewidth = 0.3
+    ) +
+    coord_flip() +
+    theme_classic() +
+    labs(
+        x = "",
+        y = "RIG-I-Only Score"
+    ) +
+    theme(
+        axis.text.y = element_text(size = 8)
+    )
+
+boxplot_ranked_cell_types
+
+pdf(paste0(path2figures,
+           "/ranked_cell_types_rigi_only_cc.pdf"),
+    width=6, height=2.5)
+boxplot_ranked_cell_types
+dev.off()
+```
+
+
+## Panel: cell types ranked by STAT-only score
+
+Top six cell types by median `stat_only1` score
+(`ranked_cell_types_stat_only_cc.pdf`).
+
+```{r, ranked_cell_types_stat_only, fig.width=6, fig.height=2.5}
+# Extract data
+plot_df <- FetchData(
+    seurat_xenium,
+    vars = c("stat_only1", "cell_type")
+)
+
+# Remove rows with missing values
+plot_df <- plot_df %>%
+    filter(
+        !is.na(cell_type),
+        !is.na(stat_only1)
+    )
+
+# Calculate median score and rank cell types
+cell_order <- plot_df %>%
+    group_by(cell_type) %>%
+    summarise(
+        median_score = median(stat_only1, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    arrange(median_score) %>%
+    pull(cell_type)
+
+# Select the top 6 cell types
+top6_cell_types <- tail(cell_order, 6)
+top6_cell_types
+
+# Filter BEFORE converting to factor
+plot_df_top6 <- plot_df %>%
+    filter(cell_type %in% top6_cell_types)
+
+# Order the top 6 according to median score
+plot_df_top6$cell_type <- factor(
+    plot_df_top6$cell_type,
+    levels = top6_cell_types
+)
+
+# Safety check
+stopifnot(!any(is.na(plot_df_top6$cell_type)))
+
+# Plot
+boxplot_ranked_cell_types <- ggplot(
+    plot_df_top6,
+    aes(
+        x = cell_type,
+        y = stat_only1
+    )
+) +
+    geom_boxplot(
+        outlier.size = 0.1,
+        linewidth = 0.3
+    ) +
+    coord_flip() +
+    theme_classic() +
+    labs(
+        x = "",
+        y = "STAT-Only Score"
+    ) +
+    theme(
+        axis.text.y = element_text(size = 8)
+    )
+
+boxplot_ranked_cell_types
+
+pdf(paste0(path2figures,
+           "/ranked_cell_types_stat_only_cc.pdf"),
+    width=6, height=2.5)
+boxplot_ranked_cell_types
+dev.off()
+```
+
+The Seurat object is no longer needed.
+
+```{r, free_memory}
+rm(seurat_xenium); invisible(gc())
+```
+
+
+## Panel: STAT-only score vs. distance to RIG-I-high cells
+
+Loading the per-cell table with the scanpy RIG-I-only / STAT-only scores and
+the distances to the nearest RIG-I-high / RIG-I-low cell (see *Input data*).
+
+```{r, loading_distances}
+path2scores_radius <- "/media/bq-storage/ag-cherrmann/cramirez/data/spat_trans/cervical_cancer/stat_scores_by_spatial_distance.tsv"
+scores_radious <- readr::read_tsv(path2scores_radius)
+str(scores_radious)
+```
+
+Each cell contributes one STAT score per reference (its distance band to the
+nearest RIG-I-high cell and to the nearest RIG-I-low cell).
+
+```{r, preparing_distance_data}
+# Prepare data
+plot_data <- scores_radious %>%
+  select(
+    stat_score,
+    distance_band_rigi_high,
+    distance_band_rigi_low
+  ) %>%
+  pivot_longer(
+    cols = c(distance_band_rigi_high, distance_band_rigi_low),
+    names_to = "rigi_reference",
+    values_to = "distance_band"
+  ) %>%
+  mutate(
+    rigi_reference = recode(
+      rigi_reference,
+      distance_band_rigi_high = "RIG-I-high",
+      distance_band_rigi_low  = "RIG-I-low"
+    ),
+    distance_band = factor(
+      distance_band,
+      levels = c(
+        "0–25 µm",
+        "25–50 µm",
+        "50–75 µm",
+        "75–100 µm",
+        "100–150 µm",
+        "150–200 µm",
+        "200–300 µm",
+        "300–400 µm",
+        "400–500 µm",
+        "≥500 µm"
+      )
+    )
+  )
+
+# Calculate median and IQR for each distance band and RIG-I reference
+plot_summary <- plot_data %>%
+  group_by(distance_band, rigi_reference) %>%
+  summarise(
+    median_stat = median(stat_score, na.rm = TRUE),
+    q1 = quantile(stat_score, 0.25, na.rm = TRUE),
+    q3 = quantile(stat_score, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+plot_summary
+readr::write_tsv(plot_summary,
+                 file.path(path2analysis, "stat_score_by_distance_band_summary.tsv"))
+```
+
+Wilcoxon rank-sum test (RIG-I-high vs. RIG-I-low reference) within each distance
+band, BH-adjusted, and the median/IQR plot (`distance_to_rigi_high.pdf`). As in
+the original panel, the test results are computed but not drawn on the plot.
+
+```{r, distance_to_rigi_high, fig.width=4, fig.height=3.5}
+# ---------------------------------------------------------
+# 1. Statistical test
+# ---------------------------------------------------------
+
+# One observation per cell for each RIG-I reference
+test_data <- scores_radious %>%
+  select(
+    cell_id,
+    stat_score,
+    distance_band_rigi_high,
+    distance_band_rigi_low
+  ) %>%
+  pivot_longer(
+    cols = c(
+      distance_band_rigi_high,
+      distance_band_rigi_low
+    ),
+    names_to = "rigi_reference",
+    values_to = "distance_band"
+  ) %>%
+  mutate(
+    rigi_reference = recode(
+      rigi_reference,
+      distance_band_rigi_high = "RIG-I-high",
+      distance_band_rigi_low  = "RIG-I-low"
+    )
+  ) %>%
+  filter(
+    !is.na(stat_score),
+    !is.na(distance_band)
+  )
+
+
+# Wilcoxon rank-sum test within each distance band
+test_results <- test_data %>%
+  group_by(distance_band) %>%
+  summarise(
+    n_high = sum(rigi_reference == "RIG-I-high"),
+    n_low  = sum(rigi_reference == "RIG-I-low"),
+
+    median_high = median(
+      stat_score[rigi_reference == "RIG-I-high"],
+      na.rm = TRUE
+    ),
+
+    median_low = median(
+      stat_score[rigi_reference == "RIG-I-low"],
+      na.rm = TRUE
+    ),
+
+    p_value = wilcox.test(
+      stat_score ~ rigi_reference,
+      data = cur_data(),
+      exact = FALSE
+    )$p.value,
+
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p_adj = p.adjust(
+      p_value,
+      method = "BH"
+    ),
+
+    significance = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ "ns"
+    )
+  )
+
+test_results
+readr::write_tsv(test_results,
+                 file.path(path2analysis, "stat_score_rigi_high_vs_low_wilcoxon.tsv"))
+
+# ---------------------------------------------------------
+# 2. Plot
+# ---------------------------------------------------------
+
+p <- plot_summary %>%
+        mutate(rigi_reference=factor(rigi_reference,
+                                     levels = c("RIG-I-high",
+                                                "RIG-I-low"))) %>%
+        ggplot(
+  aes(
+    x = distance_band,
+    y = median_stat,
+    color = rigi_reference,
+    group = rigi_reference
+  )
+) +
+  geom_line(linewidth = 1) +
+
+  geom_point(
+    size = 2.5
+  ) +
+
+  geom_errorbar(
+    aes(
+      ymin = q1,
+      ymax = q3
+    ),
+    width = 0.15,
+    linewidth = 0.7
+  ) +
+
+  coord_cartesian(
+    ylim = c(-0.025, 0.075)
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "RIG-I-high" = "red",
+      "RIG-I-low" = "gray70"
+    )
+  ) +
+
+  labs(
+    x = "Distance band",
+    y = "STAT score",
+    color = "Reference"
+  ) +
+
+  theme_classic() +
+
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    legend.position = "top"
+  )
+
+p
+
+pdf(file = paste0(path2figures, "/distance_to_rigi_high.pdf"),
+    width=4, height=3.5)
+p
+dev.off()
+```
+
+
+## Session Info
+
+```{r, session_info}
+sessionInfo()
+```
